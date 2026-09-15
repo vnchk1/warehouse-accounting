@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Отчёт по поставкам{% endblock %}
+{% block content %}
+<h1>Отчёт по поставкам</h1>
+<p class="hint">Свод по поставщикам: число поступлений и сумма в рублях за выбранный период.</p>
+
+<form method="get" action="/report" class="row">
+  <label>с <input type="date" name="date_from" value="{{ filters.date_from or '' }}"></label>
+  <label>по <input type="date" name="date_to" value="{{ filters.date_to or '' }}"></label>
+  <label>поставщик
+    <select name="supplier_id">
+      <option value="">— все —</option>
+      {% for supplier in suppliers %}
+        <option value="{{ supplier.id }}"
+          {% if filters.supplier_id == supplier.id %}selected{% endif %}>{{ supplier.name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button class="primary">Сформировать</button>
+  <a class="btn" href="/report">Сбросить</a>
+</form>
+
+{% if report %}
+<table>
+  <tr><th>Поставщик</th><th class="right">Поступлений</th><th class="right">Сумма (руб.)</th></tr>
+  {% for row in report.rows %}
+  <tr>
+    <td>{{ row.supplier_name }}</td>
+    <td class="right">{{ row.receipts }}</td>
+    <td class="right">{{ "%.2f"|format(row.total) }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="3" class="empty">За выбранный период данных нет</td></tr>
+  {% endfor %}
+  <tr class="total">
+    <td class="right" colspan="2">Итого</td>
+    <td class="right">{{ "%.2f"|format(report.total) }}</td>
+  </tr>
+</table>
+{% endif %}
+{% endblock %}

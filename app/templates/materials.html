@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Материалы{% endblock %}
+{% block content %}
+<h1>Материалы</h1>
+
+<form method="post" action="/materials" class="card">
+  <h2>{{ "Изменение материала" if editing else "Новый материал" }}</h2>
+  {% if editing %}<input type="hidden" name="material_id" value="{{ editing.id }}">{% endif %}
+  <label>Артикул
+    <input name="sku" value="{{ values.sku|default('') }}" required maxlength="32">
+    <span class="hint">заглавные латинские буквы, цифры и дефис, например CEM-500</span>
+  </label>
+  <label>Наименование<input name="name" value="{{ values.name|default('') }}" required maxlength="200"></label>
+  <label>Единица измерения
+    <select name="okei_code" required>
+      <option value="">— выберите —</option>
+      {% for okei_code, (code, name, _) in okei %}
+        <option value="{{ okei_code }}"
+          {% if values.okei_code == okei_code %}selected{% endif %}>
+          {{ code }} — {{ name }}
+        </option>
+      {% endfor %}
+    </select>
+    <span class="hint">выбирается из общероссийского классификатора ОКЕИ</span>
+  </label>
+  <button class="primary">Сохранить</button>
+  {% if editing %}<a class="btn" href="/materials">Отмена</a>{% endif %}
+</form>
+
+<table>
+  <tr><th>Артикул</th><th>Наименование</th><th>Ед. изм.</th><th></th></tr>
+  {% for material in materials %}
+  <tr>
+    <td><b>{{ material.sku }}</b></td>
+    <td>{{ material.name }}</td>
+    <td>{{ material.unit.code }}</td>
+    <td class="right">
+      <a href="/materials?edit={{ material.id }}">изменить</a>
+      <form method="post" action="/materials/{{ material.id }}/delete"
+            onsubmit="return confirm('Удалить материал «{{ material.name }}»?')">
+        <button class="link danger">удалить</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="empty">Материалов нет</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

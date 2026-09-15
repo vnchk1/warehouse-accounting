@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Складской учёт{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:,">
+</head>
+<body>
+{% if user %}
+<header>
+  <b>Складской учёт</b>
+  <nav>
+    <a href="/receipts">Поступления</a>
+    <a href="/materials">Материалы</a>
+    <a href="/suppliers">Поставщики</a>
+    <a href="/report">Отчёт</a>
+    {% if user.is_admin %}<a href="/users">Пользователи</a>{% endif %}
+  </nav>
+  <span class="who">{{ user.full_name }} ({{ role_names[user.role] }})</span>
+  <form method="post" action="/logout"><button class="link">Выход</button></form>
+</header>
+{% endif %}
+
+<main>
+  {% if message %}<p class="ok">{{ message }}</p>{% endif %}
+  {% if error %}<p class="err">{{ error }}</p>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+
+<footer>Складской учёт · <a href="/docs">описание API</a> · <a href="/healthz">healthz</a></footer>
+</body>
+</html>

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Пользователи{% endblock %}
+{% block content %}
+<h1>Пользователи</h1>
+
+<form method="post" action="/users" class="card">
+  <h2>Новый пользователь</h2>
+  <label>Логин
+    <input name="login" value="{{ values.login|default('') }}" required maxlength="50">
+    <span class="hint">строчные латинские буквы, цифры, точка, дефис, подчёркивание</span>
+  </label>
+  <label>ФИО<input name="full_name" value="{{ values.full_name|default('') }}" required maxlength="150"></label>
+  <label>Роль
+    <select name="role" required>
+      <option value="storekeeper" {% if values.role == "storekeeper" %}selected{% endif %}>Кладовщик</option>
+      <option value="admin" {% if values.role == "admin" %}selected{% endif %}>Администратор</option>
+    </select>
+  </label>
+  <label>Пароль
+    <input name="password" type="password" required maxlength="100">
+    <span class="hint">не менее 8 символов, хранится только хеш</span>
+  </label>
+  <button class="primary">Создать</button>
+</form>
+
+<table>
+  <tr><th>Логин</th><th>ФИО</th><th>Роль</th><th></th></tr>
+  {% for account in users %}
+  <tr>
+    <td><b>{{ account.login }}</b></td>
+    <td>{{ account.full_name }}</td>
+    <td>{{ role_names[account.role] }}</td>
+    <td class="right">
+      {% if account.id != user.id %}
+      <form method="post" action="/users/{{ account.id }}/delete"
+            onsubmit="return confirm('Удалить пользователя «{{ account.login }}»?')">
+        <button class="link danger">удалить</button>
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

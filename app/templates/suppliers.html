@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Поставщики{% endblock %}
+{% block content %}
+<h1>Поставщики</h1>
+
+<form method="post" action="/suppliers" class="card">
+  <h2>{{ "Изменение поставщика" if editing else "Новый поставщик" }}</h2>
+  {% if editing %}<input type="hidden" name="supplier_id" value="{{ editing.id }}">{% endif %}
+  <label>Наименование<input name="name" value="{{ values.name|default('') }}" required maxlength="200"></label>
+  <label>ИНН
+    <input name="inn" value="{{ values.inn|default('') }}" required maxlength="12"
+           pattern="[0-9]{10}|[0-9]{12}" inputmode="numeric">
+    <span class="hint">10 или 12 цифр, проверяется контрольная сумма</span>
+  </label>
+  <label>Телефон<input name="phone" value="{{ values.phone|default('') }}" maxlength="20"></label>
+  <button class="primary">Сохранить</button>
+  {% if editing %}<a class="btn" href="/suppliers">Отмена</a>{% endif %}
+</form>
+
+<table>
+  <tr><th>Наименование</th><th>ИНН</th><th>Телефон</th><th></th></tr>
+  {% for supplier in suppliers %}
+  <tr>
+    <td><b>{{ supplier.name }}</b></td>
+    <td>{{ supplier.inn }}</td>
+    <td>{{ supplier.phone or "—" }}</td>
+    <td class="right">
+      <a href="/suppliers?edit={{ supplier.id }}">изменить</a>
+      <form method="post" action="/suppliers/{{ supplier.id }}/delete"
+            onsubmit="return confirm('Удалить поставщика «{{ supplier.name }}»?')">
+        <button class="link danger">удалить</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="empty">Поставщиков нет</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

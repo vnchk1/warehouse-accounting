@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Поступления{% endblock %}
+{% block content %}
+<h1>Поступления</h1>
+
+<form method="post" action="/receipts" class="card">
+  <h2>Новое поступление</h2>
+  <label>Дата
+    <input type="date" name="receipt_date" value="{{ today }}" max="{{ today }}" required>
+    <span class="hint">не позже сегодняшней даты</span>
+  </label>
+  <label>Поставщик
+    <select name="supplier_id" required>
+      <option value="">— выберите —</option>
+      {% for supplier in suppliers %}
+        <option value="{{ supplier.id }}">{{ supplier.name }} (ИНН {{ supplier.inn }})</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button class="primary">Создать</button>
+</form>
+
+<form method="get" action="/receipts" class="row">
+  <label>с <input type="date" name="date_from" value="{{ filters.date_from or '' }}"></label>
+  <label>по <input type="date" name="date_to" value="{{ filters.date_to or '' }}"></label>
+  <label>поставщик
+    <select name="supplier_id">
+      <option value="">— все —</option>
+      {% for supplier in suppliers %}
+        <option value="{{ supplier.id }}"
+          {% if filters.supplier_id == supplier.id %}selected{% endif %}>{{ supplier.name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button>Показать</button>
+  <a class="btn" href="/receipts">Сбросить</a>
+</form>
+
+<table>
+  <tr><th>№</th><th>Дата</th><th>Поставщик</th><th>Строк</th><th class="right">Сумма (руб.)</th></tr>
+  {% for receipt in receipts %}
+  <tr>
+    <td><a href="/receipts/{{ receipt.id }}"><b>{{ receipt.id }}</b></a></td>
+    <td>{{ receipt.receipt_date.strftime("%d.%m.%Y") }}</td>
+    <td>{{ receipt.supplier.name }}</td>
+    <td>{{ receipt.items|length }}</td>
+    <td class="right">{{ "%.2f"|format(receipt.total) }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="empty">Поступлений нет</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

@@ -1,0 +1,19 @@
+# секреты и локальная конфигурация
+.env
+
+# виртуальное окружение и кэши Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# среды разработки и ОС
+.idea/
+.vscode/
+.DS_Store
+
+# журналы и выгрузки
+*.log
+*.dump

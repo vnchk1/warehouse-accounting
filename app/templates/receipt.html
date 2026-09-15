@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Поступление № {{ receipt.id }}{% endblock %}
+{% block content %}
+<h1>Поступление № {{ receipt.id }}</h1>
+
+<p>
+  Дата: <b>{{ receipt.receipt_date.strftime("%d.%m.%Y") }}</b> ·
+  поставщик: <b>{{ receipt.supplier.name }}</b> (ИНН {{ receipt.supplier.inn }}) ·
+  создал: {{ receipt.author.full_name }}
+</p>
+
+<table>
+  <tr>
+    <th>Артикул</th><th>Материал</th><th>Ед.</th>
+    <th class="right">Количество</th><th class="right">Цена (руб.)</th>
+    <th class="right">Сумма (руб.)</th><th></th>
+  </tr>
+  {% for item in receipt.items %}
+  <tr>
+    <td>{{ item.material.sku }}</td>
+    <td>{{ item.material.name }}</td>
+    <td>{{ item.material.unit.code }}</td>
+    <td class="right">{{ item.quantity.normalize() }}</td>
+    <td class="right">{{ "%.2f"|format(item.price) }}</td>
+    <td class="right">{{ "%.2f"|format(item.amount) }}</td>
+    <td class="right">
+      <form method="post" action="/receipts/{{ receipt.id }}/items/{{ item.id }}/delete">
+        <button class="link danger">удалить</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7" class="empty">Строк нет</td></tr>
+  {% endfor %}
+  <tr class="total">
+    <td colspan="5" class="right">Итого</td>
+    <td class="right">{{ "%.2f"|format(receipt.total) }}</td>
+    <td></td>
+  </tr>
+</table>
+
+<form method="post" action="/receipts/{{ receipt.id }}/items" class="card">
+  <h2>Добавить строку</h2>
+  <label>Материал
+    <select name="material_id" required>
+      <option value="">— выберите —</option>
+      {% for material in materials %}
+        <option value="{{ material.id }}">
+          {{ material.sku }} — {{ material.name }} ({{ material.unit.code }})
+        </option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Количество
+    <input name="quantity" required inputmode="decimal" placeholder="10,5">
+    <span class="hint">больше нуля; для штучных единиц — целое</span>
+  </label>
+  <label>Цена (руб.)
+    <input name="price" required inputmode="decimal" placeholder="345,90">
+    <span class="hint">не отрицательная; сумма строки считается автоматически</span>
+  </label>
+  <button class="primary">Добавить</button>
+</form>
+
+<form method="post" action="/receipts/{{ receipt.id }}/delete"
+      onsubmit="return confirm('Удалить поступление № {{ receipt.id }} вместе со строками?')">
+  <button class="danger">Удалить поступление</button>
+</form>
+<p><a href="/receipts">← к перечню поступлений</a></p>
+{% endblock %}
