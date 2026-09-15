@@ -10,7 +10,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
@@ -145,12 +145,13 @@ def delete_supplier(db: Session, supplier_id: int) -> None:
 # ---------------------------------------------------------------------------
 # Материалы (БП-06)
 # ---------------------------------------------------------------------------
-def list_materials(db: Session) -> list[Material]:
-    return list(
-        db.execute(
-            select(Material).options(selectinload(Material.unit)).order_by(Material.name)
-        ).scalars()
-    )
+def list_materials(db: Session, *, search: str = "") -> list[Material]:
+    statement = select(Material).options(selectinload(Material.unit)).order_by(Material.name)
+    text = (search or "").strip()
+    if text:
+        pattern = f"%{text}%"
+        statement = statement.where(or_(Material.sku.ilike(pattern), Material.name.ilike(pattern)))
+    return list(db.execute(statement).scalars())
 
 
 def get_material(db: Session, material_id: int) -> Material:
