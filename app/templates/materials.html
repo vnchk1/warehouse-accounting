@@ -27,6 +27,15 @@
   {% if editing %}<a class="btn" href="/materials">Отмена</a>{% endif %}
 </form>
 
+<form method="get" action="/materials" class="row">
+  <label>Поиск
+    <input name="q" value="{{ search|default('') }}"
+           placeholder="артикул или часть наименования" maxlength="200">
+  </label>
+  <button>Найти</button>
+  <a class="btn" href="/materials">Сбросить</a>
+</form>
+
 <table>
   <tr><th>Артикул</th><th>Наименование</th><th>Ед. изм.</th><th></th></tr>
   {% for material in materials %}
@@ -43,7 +52,9 @@
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="4" class="empty">Материалов нет</td></tr>
+  <tr><td colspan="4" class="empty">
+    {% if search %}По запросу «{{ search }}» ничего не найдено{% else %}Материалов нет{% endif %}
+  </td></tr>
   {% endfor %}
 </table>
 {% endblock %}
