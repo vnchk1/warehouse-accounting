@@ -186,6 +186,7 @@ def _materials_page(
     edit: int | None = None,
     error: str | None = None,
     values: dict[str, Any] | None = None,
+    search: str = "",
 ) -> Any:
     """Страница материалов; при edit=<id> форма заполняется для изменения."""
     editing = services.get_material(db, edit) if edit else None
@@ -200,10 +201,11 @@ def _materials_page(
         "materials.html",
         status_code=422 if error else 200,
         error=error,
-        materials=services.list_materials(db),
+        materials=services.list_materials(db, search=search),
         okei=sorted(rules.OKEI.items()),
         editing=editing,
         values=values,
+        search=search,
     )
 
 
@@ -213,8 +215,9 @@ def materials_page(
     db: SessionDep,
     user: CurrentUser,
     edit: Annotated[str | None, Query()] = None,
+    q: Annotated[str, Query()] = "",
 ) -> Any:
-    return _materials_page(request, db, user, edit=opt_id(edit))
+    return _materials_page(request, db, user, edit=opt_id(edit), search=q)
 
 
 @router.post("/materials")

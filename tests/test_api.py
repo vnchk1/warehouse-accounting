@@ -219,3 +219,32 @@ def test_deleting_used_supplier_shows_message(  # type: ignore[no-untyped-def]
     response = signed_in.post(f"/suppliers/{data['supplier'].id}/delete", follow_redirects=False)
     assert response.status_code != 500
     assert "нельзя удалить" in response.text
+
+
+def test_material_search(signed_in, data) -> None:  # type: ignore[no-untyped-def]
+    """Поиск материалов по артикулу и по наименованию.
+
+    Совпадение по латинскому артикулу проверяется в другом регистре; для
+    наименования регистр не меняется, потому что свёртка регистра кириллицы
+    зависит от локали кластера PostgreSQL и в тесте на неё опираться нельзя.
+    """
+    for sku, name in (("CEM-500", "Цемент М500"), ("KIR-RED", "Кирпич рядовой")):
+        signed_in.post(
+            f"{V1}/materials",
+            json={"sku": sku, "name": name, "unit_id": data["kg"].id},
+        )
+
+    by_name = signed_in.get("/materials?q=Кирпич")
+    assert by_name.status_code == 200
+    assert "Кирпич рядовой" in by_name.text
+    assert "Цемент М500" not in by_name.text
+
+    by_sku = signed_in.get("/materials?q=cem")  # артикул CEM-500, регистр другой
+    assert "Цемент М500" in by_sku.text
+    assert "Кирпич рядовой" not in by_sku.text
+
+    nothing = signed_in.get("/materials?q=отсутствующий-материал")
+    assert "ничего не найдено" in nothing.text
+
+    everything = signed_in.get("/materials?q=")  # пустой запрос отбор не применяет
+    assert "Цемент М500" in everything.text and "Кирпич рядовой" in everything.text
