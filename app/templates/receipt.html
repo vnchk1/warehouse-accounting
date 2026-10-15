@@ -6,6 +6,7 @@
 <p>
   Дата: <b>{{ receipt.receipt_date.strftime("%d.%m.%Y") }}</b> ·
   поставщик: <b>{{ receipt.supplier.name }}</b> (ИНН {{ receipt.supplier.inn }}) ·
+  накладная № <b>{{ receipt.invoice_number }}</b> ·
   создал: {{ receipt.author.full_name }}
 </p>
 

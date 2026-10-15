@@ -122,6 +122,8 @@ class Receipt(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     receipt_date: Mapped[date] = mapped_column(Date)
     supplier_id: Mapped[int] = mapped_column(ForeignKey("supplier.id", ondelete="RESTRICT"))
+    # номер накладной поставщика (БП-11); миграции 0002–0004
+    invoice_number: Mapped[str] = mapped_column(String(30))
     created_by: Mapped[int] = mapped_column(ForeignKey("app_user.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -133,6 +135,11 @@ class Receipt(Base):
 
     __table_args__ = (
         CheckConstraint("receipt_date >= DATE '2000-01-01'", name="ck_receipt_date"),
+        CheckConstraint(
+            "invoice_number <> '' AND invoice_number = btrim(invoice_number)",
+            name="ck_receipt_invoice",
+        ),
+        UniqueConstraint("supplier_id", "invoice_number", name="uq_receipt_invoice"),
         Index("ix_receipt_date", "receipt_date"),
         Index("ix_receipt_supplier", "supplier_id"),
     )

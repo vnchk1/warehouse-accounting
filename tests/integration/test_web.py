@@ -208,7 +208,11 @@ def test_deleting_used_material_shows_message(signed_in: TestClient, data: dict[
 def test_receipt_forms(signed_in: TestClient, data: dict[str, Any]) -> None:
     material = new_material(signed_in, data["kg"].id)
     created = form(
-        signed_in, "/receipts", receipt_date=date.today(), supplier_id=data["supplier"].id
+        signed_in,
+        "/receipts",
+        receipt_date=date.today(),
+        supplier_id=data["supplier"].id,
+        invoice_number="УПД-77",
     )
     assert created.status_code == 303
     card_url = created.headers["location"].split("?")[0]
@@ -221,6 +225,8 @@ def test_receipt_forms(signed_in: TestClient, data: dict[str, Any]) -> None:
     card = signed_in.get(card_url)
     assert card.status_code == 200
     assert "Цемент М500" in card.text and "25.25" in card.text
+    assert "накладная № <b>УПД-77</b>" in card.text
+    assert "УПД-77" in signed_in.get("/receipts").text
 
     wrong = form(
         signed_in, f"{card_url}/items", material_id=material["id"], quantity="1", price="1"
@@ -247,11 +253,12 @@ def test_receipt_forms(signed_in: TestClient, data: dict[str, Any]) -> None:
 @pytest.mark.parametrize(
     ("fields", "message"),
     [
-        ({"receipt_date": "", "supplier_id": "1"}, "обязательно"),
-        ({"receipt_date": "2999-01-01", "supplier_id": "1"}, "позже сегодняшней"),
-        ({"receipt_date": "01.01.2026", "supplier_id": "1"}, "ГГГГ-ММ-ДД"),
-        ({"receipt_date": "2026-01-01", "supplier_id": ""}, "«Поставщик»: выберите"),
-        ({"receipt_date": "2026-01-01", "supplier_id": "99"}, "не найден"),
+        ({"receipt_date": "", "supplier_id": "1", "invoice_number": "1"}, "обязательно"),
+        ({"receipt_date": "2999-01-01", "supplier_id": "1", "invoice_number": "1"}, "позже"),
+        ({"receipt_date": "01.01.2026", "supplier_id": "1", "invoice_number": "1"}, "ГГГГ-ММ-ДД"),
+        ({"receipt_date": "2026-01-01", "supplier_id": "", "invoice_number": "1"}, "выберите"),
+        ({"receipt_date": "2026-01-01", "supplier_id": "99", "invoice_number": "1"}, "не найден"),
+        ({"receipt_date": "2026-01-01", "supplier_id": "1", "invoice_number": ""}, "накладной"),
     ],
 )
 def test_receipt_form_errors(
@@ -260,6 +267,23 @@ def test_receipt_form_errors(
     response = form(signed_in, "/receipts", **fields)
     assert response.status_code == 422
     assert message in response.text
+
+
+def test_duplicate_invoice_keeps_entered_values(
+    signed_in: TestClient, data: dict[str, Any]
+) -> None:
+    new_receipt(signed_in, data["supplier"].id, "2026-01-10", invoice="ТН-15")
+    response = form(
+        signed_in,
+        "/receipts",
+        receipt_date="2026-01-12",
+        supplier_id=data["supplier"].id,
+        invoice_number="ТН-15",
+    )
+    assert response.status_code == 422
+    assert "уже оприходована" in response.text
+    assert 'value="ТН-15"' in response.text and 'value="2026-01-12"' in response.text
+    assert f'value="{data["supplier"].id}"\n          selected' in response.text
 
 
 def test_receipt_list_filters(signed_in: TestClient, data: dict[str, Any]) -> None:

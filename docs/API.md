@@ -12,6 +12,12 @@
 `total`) выражены в рублях; в экранных формах это указано в заголовках
 столбцов «Цена (руб.)» и «Сумма (руб.)».
 
+`invoice_number` — номер накладной (УПД) поставщика, по которой принят товар
+(правило БП-11): обязателен, до 30 символов — буквы, цифры, пробел и знаки
+`№ / . _ -`. Повтор номера у того же поставщика отклоняется с кодом 409 и
+сообщением, в каком поступлении эта накладная уже оприходована. Поле есть в
+ответах `GET /api/v1/receipts` и `GET /api/v1/receipts/{id}`.
+
 ## Формат ошибки
 
 ```json
@@ -83,7 +89,7 @@
 | Метод | Назначение | Ответы |
 |---|---|---|
 | `GET /api/v1/receipts` | Перечень; отбор `date_from`, `date_to`, `supplier_id` | 200 |
-| `POST /api/v1/receipts` | Создать: `{"receipt_date", "supplier_id"}` | 201, 404, 422 |
+| `POST /api/v1/receipts` | Создать: `{"receipt_date", "supplier_id", "invoice_number"}` | 201, 404, 409, 422 |
 | `GET /api/v1/receipts/{id}` | Поступление со строками | 200, 404 |
 | `DELETE /api/v1/receipts/{id}` | Удалить вместе со строками | 204, 404 |
 | `POST /api/v1/receipts/{id}/items` | Строка: `{"material_id", "quantity", "price"}` | 201, 404, 409, 422 |
@@ -114,7 +120,7 @@ curl -s -b cookies.txt -X POST $BASE/materials -H 'Content-Type: application/jso
   -d '{"sku":"CEM-500","name":"Цемент М500","unit_id":1}'
 
 curl -s -b cookies.txt -X POST $BASE/receipts -H 'Content-Type: application/json' \
-  -d '{"receipt_date":"2026-09-13","supplier_id":1}'
+  -d '{"receipt_date":"2026-09-13","supplier_id":1,"invoice_number":"ТН-1542"}'
 
 curl -s -b cookies.txt -X POST $BASE/receipts/1/items -H 'Content-Type: application/json' \
   -d '{"material_id":1,"quantity":"10.5","price":"345.90"}'

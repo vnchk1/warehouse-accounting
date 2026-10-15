@@ -17,6 +17,7 @@ from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.exc import IntegrityError
 
 from app import rules
 from app.models import Base
@@ -76,6 +77,7 @@ def counts(engine: Engine) -> dict[str, int]:
 def test_migrations_form_one_chain() -> None:
     """Последовательные изменения схемы: одна голова, у каждой ревизии один предок."""
     chain = list(script().walk_revisions())
+    assert len(chain) >= 4  # начальная схема и не менее трёх изменений
     assert len(script().get_heads()) == 1
     for newer, older in zip(chain, chain[1:], strict=False):
         assert newer.down_revision == older.revision
@@ -126,8 +128,24 @@ def test_every_migration_can_be_reverted(scratch: str) -> None:
         engine.dispose()
 
 
+def invoice_numbers(engine: Engine) -> list[str | None]:
+    with engine.connect() as connection:
+        return list(
+            connection.execute(text("SELECT invoice_number FROM receipt ORDER BY id")).scalars()
+        )
+
+
+def is_nullable(engine: Engine) -> bool:
+    columns = {column["name"]: column for column in inspect(engine).get_columns("receipt")}
+    return bool(columns["invoice_number"]["nullable"])
+
+
 def test_upgrade_database_with_data(scratch: str) -> None:
-    """База, заполненная в первой версии схемы, обновляется без потери данных."""
+    """База, заполненная в первой версии схемы, обновляется без потери данных.
+
+    Новая функция (номер накладной, БП-11) вводится тремя миграциями: столбец
+    (0002) → заполнение существующих поступлений (0003) → ограничения (0004).
+    """
     alembic(scratch, "upgrade", revisions()[0])
     engine = create_engine(scratch)
     try:
@@ -135,7 +153,15 @@ def test_upgrade_database_with_data(scratch: str) -> None:
             connection.execute(text(SAMPLE_DATA))
         before = counts(engine)
 
-        alembic(scratch, "upgrade", "head")
+        alembic(scratch, "upgrade", "0002")  # столбец есть, значений ещё нет
+        assert invoice_numbers(engine) == [None, None, None]
+        assert is_nullable(engine)
+
+        alembic(scratch, "upgrade", "0003")  # условные номера, столбец обязательный
+        assert invoice_numbers(engine) == ["БН-1", "БН-2", "БН-3"]
+        assert not is_nullable(engine)
+
+        alembic(scratch, "upgrade", "head")  # правило БП-11 в базе
         assert current_revision(engine) == revisions()[-1]
         assert counts(engine) == before
         with engine.connect() as connection:
@@ -148,5 +174,38 @@ def test_upgrade_database_with_data(scratch: str) -> None:
                 Decimal("50.00"),
                 Decimal("0.04"),
             ]
+        with pytest.raises(IntegrityError) as error, engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO receipt (receipt_date, supplier_id, created_by, invoice_number)"
+                    " VALUES ('2026-02-01', 1, 1, 'БН-1')"
+                )
+            )
+        assert "uq_receipt_invoice" in str(error.value)
+    finally:
+        engine.dispose()
+
+
+def test_downgrade_keeps_entered_numbers(scratch: str) -> None:
+    """Откат убирает только условные номера; введённые пользователями остаются."""
+    alembic(scratch, "upgrade", revisions()[0])
+    engine = create_engine(scratch)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(SAMPLE_DATA))
+        alembic(scratch, "upgrade", "head")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO receipt (receipt_date, supplier_id, created_by, invoice_number)"
+                    " VALUES ('2026-02-01', 2, 1, 'ТН-77')"
+                )
+            )
+        alembic(scratch, "downgrade", "0002")
+        assert invoice_numbers(engine) == [None, None, None, "ТН-77"]
+        alembic(scratch, "downgrade", "0001")
+        columns = {column["name"] for column in inspect(engine).get_columns("receipt")}
+        assert "invoice_number" not in columns
+        assert counts(engine)["receipt"] == 4
     finally:
         engine.dispose()

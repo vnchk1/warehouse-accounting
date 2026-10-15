@@ -1,4 +1,4 @@
-"""Правила предметной области БП-01 … БП-10: корректные, ошибочные и граничные значения.
+"""Правила предметной области БП-01 … БП-11: корректные, ошибочные и граничные значения.
 
 Это чистые функции, база данных не нужна. Набор проверяется мутационно
 (make mutation): изменение любого условия в app/rules.py должно приводить к
@@ -298,6 +298,40 @@ def test_bp07_material_not_repeated() -> None:
     with pytest.raises(rules.AppError) as error:
         rules.ensure_material_not_repeated({1, 2}, 2)
     assert (error.value.status, error.value.rule) == (409, "БП-07")
+
+
+# ---------------------------------------------------------------------------
+# БП-11. Номер накладной поставщика
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("ТН-15", "ТН-15"),
+        ("  УПД   12/2026 ", "УПД 12/2026"),  # пробелы по краям и подряд
+        ("№ 15", "№ 15"),
+        ("A-1.2_3", "A-1.2_3"),
+        ("1", "1"),
+        ("Ё" * 30, "Ё" * 30),  # 30 символов — предел
+    ],
+)
+def test_bp11_valid_invoice_number(value: str, expected: str) -> None:
+    assert rules.validate_invoice_number(value) == expected
+
+
+@pytest.mark.parametrize("value", ["", "   ", None, "№", "--/--", "Н" * 31, "ТН#15", "ТН<15>"])
+def test_bp11_invalid_invoice_number(value: str | None) -> None:
+    with pytest.raises(rules.AppError) as error:
+        rules.validate_invoice_number(value)
+    assert (error.value.rule, error.value.field) == ("БП-11", "invoice_number")
+
+
+def test_bp11_messages() -> None:
+    with pytest.raises(rules.AppError) as empty:
+        rules.validate_invoice_number("")
+    assert "обязателен" in empty.value.message
+    with pytest.raises(rules.AppError) as wrong:
+        rules.validate_invoice_number("№")
+    assert "до 30 символов" in wrong.value.message
 
 
 # ---------------------------------------------------------------------------

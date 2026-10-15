@@ -49,6 +49,7 @@ class MaterialIn(Schema):
 class ReceiptIn(Schema):
     receipt_date: date
     supplier_id: int
+    invoice_number: str = Field(examples=["ТН-1542"])
 
 
 class ItemIn(Schema):
@@ -114,6 +115,7 @@ def receipt_json(receipt: Receipt, *, with_items: bool = True) -> dict[str, Any]
         "receipt_date": receipt.receipt_date.isoformat(),
         "supplier_id": receipt.supplier_id,
         "supplier_name": receipt.supplier.name,
+        "invoice_number": receipt.invoice_number,
         "total": format(receipt.total, "f"),
     }
     if with_items:
@@ -256,7 +258,11 @@ def get_receipts(
 @router.post("/receipts", status_code=201, summary="Создание поступления")
 def post_receipt(payload: ReceiptIn, db: SessionDep, user: CurrentUser) -> Any:
     receipt = services.create_receipt(
-        db, user, receipt_date=payload.receipt_date, supplier_id=payload.supplier_id
+        db,
+        user,
+        receipt_date=payload.receipt_date,
+        supplier_id=payload.supplier_id,
+        invoice_number=payload.invoice_number,
     )
     return receipt_json(receipt)
 
