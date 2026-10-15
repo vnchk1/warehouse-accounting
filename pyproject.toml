@@ -7,39 +7,114 @@ name = "warehouse"
 version = "0.1.0"
 description = "Складской учёт: материалы, поставщики и поступления на склад"
 requires-python = ">=3.11"
+# Версии зафиксированы точно (==): одна и та же сборка у всех участников, в
+# проверках и на сервере. Обновление версии — отдельная задача с make verify.
 dependencies = [
-    "fastapi>=0.115",
-    "uvicorn>=0.30",
-    "jinja2>=3.1",
-    "python-multipart>=0.0.9",
-    "pydantic-settings>=2.3",
-    "sqlalchemy>=2.0.30",
-    "psycopg[binary]>=3.1",
-    "alembic>=1.13",
-    "argon2-cffi>=23.1",
+    "fastapi==0.141.1",
+    "starlette==1.6.0",
+    "pydantic==2.13.5",
+    "pydantic-settings==2.14.2",
+    "uvicorn==0.53.0",
+    "jinja2==3.1.6",
+    "python-multipart==0.0.32",
+    "sqlalchemy==2.0.54",
+    "psycopg[binary]==3.3.6",
+    "alembic==1.19.2",
+    "argon2-cffi==25.1.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.5"]
+dev = [
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "coverage==7.16.1",
+    "httpx2==2.13.0",
+    "ruff==0.16.8",
+    "bandit==1.9.4",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+# ---------------------------------------------------------------------------
+# Форматирование и статический анализ кода (make format-check, make lint-check)
+# ---------------------------------------------------------------------------
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM"]
-ignore = ["B008"]  # Depends(...) в значении по умолчанию — идиома FastAPI
+# T20 — запрет print в коде приложения; RUF100 и PGH004 — каждое исключение
+# `# noqa` должно называть конкретное правило и быть действительно нужным.
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "T20", "RUF100", "PGH004"]
+ignore = [
+    "B008",  # Depends(...) в значении по умолчанию — штатная идиома FastAPI
+]
 
+[tool.ruff.lint.per-file-ignores]
+# Консольные команды: вывод на экран — их назначение.
+"app/seed.py" = ["T201"]
+"app/demo_seed.py" = ["T201"]
+"app/dbadmin.py" = ["T201"]
+"tools/*.py" = ["T201"]
+
+# ---------------------------------------------------------------------------
+# Статический анализ безопасности, SAST (make sast)
+# ---------------------------------------------------------------------------
+[tool.bandit]
+# Тесты не проверяются: assert в них — способ проверки, а SQL в подготовке
+# тестовой базы собирается из констант теста.
+exclude_dirs = ["tests"]
+# Список skips пуст: исключения разрешены только точечно, комментарием
+# `# nosec BXXX — причина` в конкретной строке (см. CONTRIBUTING.md).
+skips = []
+
+# ---------------------------------------------------------------------------
+# Тесты (make test)
+# ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
-# Предупреждения сторонних библиотек, на код проекта не влияющие: их выдаёт
-# тестовый клиент Starlette. Скрыты, чтобы отчёт о прогоне оставался чистым и
-# в нём были видны предупреждения самого приложения.
+addopts = "-ra --strict-markers --strict-config"
+xfail_strict = true
+junit_family = "xunit2"
 filterwarnings = [
-    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+    # Предупреждение выдаёт тестовый клиент Starlette 1.6 при anyio 4.15: он
+    # ссылается на устаревшее имя anyio.abc.BlockingPortal. На код приложения
+    # не влияет; уйдёт после обновления Starlette.
     "ignore:The anyio.abc.BlockingPortal alias is deprecated",
 ]
+
+# ---------------------------------------------------------------------------
+# Покрытие кода тестами (make test)
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+# Порог снижать запрещено (CONTRIBUTING.md); нижняя граница проверяется
+# make policy, значение — в tools/policy.py.
+fail_under = 98
+show_missing = true
+skip_covered = true
+precision = 1
+exclude_also = [
+    # точка входа консольной команды: её содержимое вызывается из тестов напрямую
+    'if __name__ == "__main__":',
+]
+
+[tool.coverage.html]
+directory = "reports/htmlcov"
+
+[tool.coverage.xml]
+output = "reports/coverage.xml"
+
+# ---------------------------------------------------------------------------
+# Мутационная проверка тестов (make mutation)
+# ---------------------------------------------------------------------------
+[tool.warehouse.mutation]
+# Основная логика — правила предметной области. Тесты должны обнаружить
+# любое изменение условия в этом файле.
+target = "app/rules.py"
+tests = "tests/unit"
+min_score = 100
