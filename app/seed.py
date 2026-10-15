@@ -6,18 +6,22 @@
 from __future__ import annotations
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app import db, rules
 from app.auth import hash_password
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.models import Unit, User
 
 
 def main() -> None:
     settings = get_settings()
     db.setup()
-    session = next(db.get_session())
+    with db.session_scope() as session:
+        fill(session, settings)
 
+
+def fill(session: Session, settings: Settings) -> None:
     # Обозначение и код ОКЕИ уникальны каждый по отдельности, поэтому
     # пропускаем запись, если занято хотя бы одно из двух значений: иначе
     # повторный запуск на непустой базе завершился бы отказом.
@@ -32,11 +36,11 @@ def main() -> None:
         codes.add(code)
         okei_codes.add(okei_code)
         added += 1
-    print(f"Единицы измерения: добавлено {added}, всего {len(codes)}")  # noqa: T201
+    print(f"Единицы измерения: добавлено {added}, всего {len(codes)}")
 
     login = settings.admin_login.strip().lower()
     if session.execute(select(User).where(User.login == login)).scalar_one_or_none():
-        print(f"Администратор «{login}» уже существует")  # noqa: T201
+        print(f"Администратор «{login}» уже существует")
     else:
         session.add(
             User(
@@ -46,10 +50,7 @@ def main() -> None:
                 role="admin",
             )
         )
-        print(f"Создан администратор «{login}» с паролем из ADMIN_PASSWORD")  # noqa: T201
-
-    session.commit()
-    session.close()
+        print(f"Создан администратор «{login}» с паролем из ADMIN_PASSWORD")
 
 
 if __name__ == "__main__":

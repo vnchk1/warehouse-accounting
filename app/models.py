@@ -1,4 +1,9 @@
-"""Модели данных. Схема создаётся миграцией migrations/versions/0001_initial.py."""
+"""Модели данных.
+
+Схема базы данных создаётся и изменяется только миграциями (migrations/versions).
+Модели описывают ту же схему — таблицы, ограничения и индексы; их совпадение
+со схемой после миграций проверяет тест tests/integration/test_migrations.py.
+"""
 
 from __future__ import annotations
 
@@ -12,10 +17,12 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -39,7 +46,7 @@ class Unit(Base):
     name: Mapped[str] = mapped_column(String(100))
     okei_code: Mapped[str] = mapped_column(String(3), unique=True)
     # True для штучных единиц: количество в документах должно быть целым
-    is_integer: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_integer: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     # passive_deletes: удаление проверяет база данных (ondelete=RESTRICT),
     # ссылки на удаляемую запись не обнуляются.
@@ -80,7 +87,10 @@ class Material(Base):
         back_populates="material", passive_deletes="all"
     )
 
-    __table_args__ = (CheckConstraint("sku ~ '^[A-Z0-9-]{3,32}$'", name="ck_material_sku"),)
+    __table_args__ = (
+        CheckConstraint("sku ~ '^[A-Z0-9-]{3,32}$'", name="ck_material_sku"),
+        Index("ix_material_unit", "unit_id"),
+    )
 
 
 class User(Base):
@@ -98,10 +108,6 @@ class User(Base):
         CheckConstraint("role IN ('admin', 'storekeeper')", name="ck_user_role"),
         CheckConstraint("login ~ '^[a-z0-9_.-]{3,50}$'", name="ck_user_login"),
     )
-
-    @property
-    def role_name(self) -> str:
-        return ROLE_NAMES[self.role]
 
     @property
     def is_admin(self) -> bool:
@@ -125,7 +131,11 @@ class Receipt(Base):
         back_populates="receipt", cascade="all, delete-orphan", order_by="ReceiptItem.id"
     )
 
-    __table_args__ = (CheckConstraint("receipt_date >= DATE '2000-01-01'", name="ck_receipt_date"),)
+    __table_args__ = (
+        CheckConstraint("receipt_date >= DATE '2000-01-01'", name="ck_receipt_date"),
+        Index("ix_receipt_date", "receipt_date"),
+        Index("ix_receipt_supplier", "supplier_id"),
+    )
 
     @property
     def total(self) -> Decimal:
@@ -153,4 +163,6 @@ class ReceiptItem(Base):
         UniqueConstraint("receipt_id", "material_id", name="uq_receipt_item"),
         CheckConstraint("quantity > 0", name="ck_item_quantity"),
         CheckConstraint("price >= 0", name="ck_item_price"),
+        Index("ix_item_receipt", "receipt_id"),
+        Index("ix_item_material", "material_id"),
     )

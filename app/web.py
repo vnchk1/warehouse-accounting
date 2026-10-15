@@ -69,6 +69,14 @@ def opt_id(value: str | None) -> int | None:
     return int(text) if text.isdigit() and int(text) > 0 else None
 
 
+def req_id(value: str | None, *, field: str, title: str) -> int:
+    """Обязательный выбор из списка: пустое значение — ошибка с понятным текстом."""
+    chosen = opt_id(value)
+    if chosen is None:
+        raise rules.AppError(f"Поле «{title}»: выберите значение из списка", field=field)
+    return chosen
+
+
 # ---------------------------------------------------------------------------
 # Вход и выход
 # ---------------------------------------------------------------------------
@@ -313,7 +321,7 @@ def receipts_create(
             db,
             user,
             receipt_date=req_date(receipt_date, field="receipt_date", title="Дата"),
-            supplier_id=opt_id(supplier_id) or 0,
+            supplier_id=req_id(supplier_id, field="supplier_id", title="Поставщик"),
         )
     except rules.AppError as error:
         return _receipts_page(request, db, user, error=error.message)
@@ -353,7 +361,7 @@ def receipt_add_item(
         services.add_item(
             db,
             receipt_id=receipt_id,
-            material_id=int(material_id) if material_id.isdigit() else 0,
+            material_id=req_id(material_id, field="material_id", title="Материал"),
             quantity=quantity,
             price=price,
         )

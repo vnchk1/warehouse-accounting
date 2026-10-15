@@ -18,9 +18,10 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from app import db, rules, services
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.models import Material, Receipt, Supplier, User
 
 # ---------------------------------------------------------------------------
@@ -105,14 +106,19 @@ def _price(random_source: random.Random, okei_code: str) -> Decimal:
 def main() -> int:
     settings = get_settings()
     db.setup()
-    session = next(db.get_session())
-    random_source = random.Random(20260913)  # одинаковый результат при каждом запуске
+    with db.session_scope() as session:
+        return fill(session, settings)
+
+
+def fill(session: Session, settings: Settings) -> int:
+    # Безопасно: демонстрационные данные, не криптография — нужен повторяемый результат.
+    random_source = random.Random(20260913)  # nosec B311
 
     admin = session.execute(
         select(User).where(User.login == settings.admin_login.strip().lower())
     ).scalar_one_or_none()
     if admin is None:
-        print("Администратор не найден. Сначала выполните: make seed")  # noqa: T201
+        print("Администратор не найден. Сначала выполните: make seed")
         return 1
 
     # -- Поставщики ---------------------------------------------------------
@@ -124,7 +130,7 @@ def main() -> int:
             existing = services.save_supplier(session, name=name, inn=inn, phone=phone)
             added_suppliers += 1
         suppliers.append(existing)
-    print(f"Поставщики: добавлено {added_suppliers}, всего {len(suppliers)}")  # noqa: T201
+    print(f"Поставщики: добавлено {added_suppliers}, всего {len(suppliers)}")
 
     # -- Материалы ----------------------------------------------------------
     added_materials = 0
@@ -135,18 +141,17 @@ def main() -> int:
             existing = services.save_material(session, sku=sku, name=name, okei_code=okei_code)
             added_materials += 1
         materials.append((existing, okei_code))
-    print(f"Материалы: добавлено {added_materials}, всего {len(materials)}")  # noqa: T201
+    print(f"Материалы: добавлено {added_materials}, всего {len(materials)}")
 
     session.commit()
 
     # -- Поступления --------------------------------------------------------
     already = session.execute(select(func.count()).select_from(Receipt)).scalar_one()
     if already:
-        print(  # noqa: T201
+        print(
             f"Поступления: в базе уже есть {already} — повторно не добавляются.\n"
             "Чтобы наполнить базу заново, очистите её: make migrate && make seed"
         )
-        session.close()
         return 0
 
     today = date.today()
@@ -170,9 +175,8 @@ def main() -> int:
 
     session.commit()
     total = session.execute(select(func.count()).select_from(Receipt)).scalar_one()
-    print(f"Поступления: добавлено {total}, строк в них {lines_total}")  # noqa: T201
-    print("Демонстрационные данные готовы. Откройте раздел «Отчёт».")  # noqa: T201
-    session.close()
+    print(f"Поступления: добавлено {total}, строк в них {lines_total}")
+    print("Демонстрационные данные готовы. Откройте раздел «Отчёт».")
     return 0
 
 
@@ -180,5 +184,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except rules.AppError as error:  # понятное сообщение вместо трассировки
-        print(f"Не удалось наполнить базу: {error.message}")  # noqa: T201
+        print(f"Не удалось наполнить базу: {error.message}")
         sys.exit(1)

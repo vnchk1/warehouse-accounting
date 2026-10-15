@@ -3,48 +3,49 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
 
-_engine: Engine | None = None
-_session_factory: sessionmaker[Session] | None = None
+Connection = tuple[Engine, sessionmaker[Session]]
+
+_connection: Connection | None = None
 
 
-def setup(database_url: str | None = None) -> Engine:
+def setup(database_url: str | None = None) -> Connection:
     """Создаёт подключение (вызывается при старте приложения и в тестах)."""
-    global _engine, _session_factory
-    if _engine is not None:
-        _engine.dispose()
-    _engine = create_engine(database_url or get_settings().database_url, pool_pre_ping=True)
-    _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
-    return _engine
+    global _connection
+    if _connection is not None:
+        _connection[0].dispose()
+    bind = create_engine(database_url or get_settings().database_url, pool_pre_ping=True)
+    _connection = (bind, sessionmaker(bind=bind, expire_on_commit=False))
+    return _connection
+
+
+def _current() -> Connection:
+    return _connection if _connection is not None else setup()
 
 
 def is_configured() -> bool:
     """Подключение уже настроено (в тестах оно задаётся заранее)."""
-    return _engine is not None
+    return _connection is not None
 
 
 def engine() -> Engine:
-    if _engine is None:
-        setup()
-    assert _engine is not None
-    return _engine
+    return _current()[0]
 
 
-def get_session() -> Iterator[Session]:
-    """Зависимость FastAPI: одна транзакция на один запрос.
+@contextmanager
+def session_scope() -> Iterator[Session]:
+    """Одна транзакция: фиксируется при успехе, откатывается при ошибке.
 
     При ошибке транзакция откатывается целиком — частично сохранённых
-    документов не остаётся.
+    документов не остаётся. Сеанс закрывается в любом случае.
     """
-    if _session_factory is None:
-        setup()
-    assert _session_factory is not None
-    session = _session_factory()
+    session = _current()[1]()
     try:
         yield session
         session.commit()
@@ -53,6 +54,12 @@ def get_session() -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+def get_session() -> Iterator[Session]:
+    """Зависимость FastAPI: одна транзакция на один запрос."""
+    with session_scope() as session:
+        yield session
 
 
 def database_is_available() -> bool:

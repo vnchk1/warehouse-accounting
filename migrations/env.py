@@ -11,7 +11,7 @@ from sqlalchemy import create_engine
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.models import Base  # noqa: E402
+from app.models import Base
 
 target_metadata = Base.metadata
 
@@ -29,7 +29,13 @@ def database_url() -> str:
 def run() -> None:
     engine = create_engine(database_url())
     with engine.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            # для alembic revision --autogenerate и проверки совпадения схемы с моделями
+            compare_type=True,
+            compare_server_default=True,
+        )
         with context.begin_transaction():
             context.run_migrations()
 
