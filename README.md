@@ -4,65 +4,86 @@
 
 Стек: Python 3.11+, FastAPI, PostgreSQL 16, SQLAlchemy, Alembic, Jinja2.
 Есть графический интерфейс, HTTP API (`/docs`) и авторизация с двумя ролями.
+Версии всех зависимостей зафиксированы в `pyproject.toml`.
 
 - Описание API — [docs/API.md](docs/API.md)
-- Схема данных — [docs/DATA_MODEL.md](docs/DATA_MODEL.md)
+- Схема данных и миграции — [docs/DATA_MODEL.md](docs/DATA_MODEL.md)
+- Тесты, проверки и покрытие функций — [docs/TESTING.md](docs/TESTING.md)
 - Правила внесения изменений — [CONTRIBUTING.md](CONTRIBUTING.md)
+- Развертывание на серверах — [deploy/README.md](deploy/README.md)
 
-## Быстрый старт
+## Быстрый старт (Linux, WSL2)
 
-```bash
-# 1. Окружение и зависимости (используется python3 из PATH)
-make setup
-
-# 2. База данных
-sudo -u postgres psql -c "CREATE USER warehouse WITH PASSWORD 'пароль';"
-sudo -u postgres psql -c "CREATE DATABASE warehouse OWNER warehouse;"
-sudo -u postgres psql -c "ALTER USER warehouse CREATEDB;" # для автоматического создания тестовой БД
-
-# 3. Заполнить .env (создан командой make setup)
-#    SECRET_KEY проще всего сгенерировать так:
-.venv/bin/python -c "import secrets; print(secrets.token_urlsafe(32))"
-
-# 4. Схема и начальные данные
-make migrate
-make seed
-
-# 5. (Опционально) Демо-данные для демонстрации
-make demo_seed
-
-# 6. Запуск
-make run
-```
-
-Приложение открывается на `http://127.0.0.1:8000`. Вход — логином и паролем из
-`ADMIN_LOGIN` и `ADMIN_PASSWORD`.
-
-Команда `make demo_seed` наполняет базу примерами: 10 поставщиков, 26 материалов
-и 28 поступлений за последние полгода. Она необязательна и безопасна для
-повторного запуска: поставщики и материалы добавляются только недостающие, а
-поступления создаются один раз — если они уже есть, шаг пропускается.
-
-Чтобы начать с чистой базы:
+Нужны: Python 3.11+ с модулем venv, PostgreSQL 16, GNU make, git.
 
 ```bash
-sudo -u postgres psql -c "DROP DATABASE IF EXISTS warehouse;"
-sudo -u postgres psql -c "CREATE DATABASE warehouse OWNER warehouse;"
-make migrate && make seed && make demo_seed
+sudo apt install python3 python3-venv postgresql postgresql-client make git
+
+make setup     # единый сценарий первоначальной настройки (scripts/setup.sh)
+make run       # http://127.0.0.1:8000
 ```
+
+`make setup` выполняет по порядку: проверку программ → виртуальное окружение
+`.venv` и зафиксированные версии зависимостей → файл `.env` со случайными
+паролями → роль и базы PostgreSQL (рабочая и тестовая, через `sudo -u postgres`)
+→ миграции и начальные данные → git-хук `pre-push`. Повторный запуск безопасен:
+готовые шаги пропускаются, существующий `.env` не меняется. Пароль администратора
+для входа печатается при создании `.env` (`ADMIN_PASSWORD` в `.env`).
+
+Демонстрационные данные (10 поставщиков, 26 материалов, 28 поступлений):
+`make demo_seed`.
 
 ## Команды
 
 | Команда | Назначение |
 |---|---|
-| `make setup` | Виртуальное окружение, зависимости, создание `.env` |
+| `make setup` | Первоначальная настройка проекта (см. выше) |
+| `make install` | Установить зафиксированные версии зависимостей в `.venv` |
 | `make run` | Запуск приложения |
-| `make migrate` | Применить миграции |
-| `make seed` | Заполнить справочник ОКЕИ и создать администратора |
-| `make demo_seed` | Наполнить базу примерами данных (необязательно) |
-| `make test` | Автоматические тесты |
-| `make lint` | Форматирование и статический анализ |
-| `make verify` | Проверки перед запросом на слияние: `lint` + `test` |
+| `make migrate` | Применить миграции до последней версии схемы |
+| `make migrate-down` | Откатить последнюю миграцию |
+| `make migrate-status` | Текущая версия схемы и список миграций |
+| `make seed` | Справочник ОКЕИ и администратор |
+| `make demo_seed` | Демонстрационные данные (необязательно) |
+| `make backup` | Резервная копия базы в `backups/` |
+| `make restore` | Восстановление из копии: `make restore [FILE=…] [YES=1]` |
+| `make backups` | Перечень резервных копий |
+| `make psql` | Консоль рабочей базы: `make psql [SQL="…"]` |
+| `make lint` | Исправить форматирование и простые замечания линтера |
+| `make test` | Все тесты с покрытием, отчёты в `reports/` |
+| `make test-unit` | Только unit-тесты (база данных не нужна) |
+| **`make verify`** | **Обязательный набор проверок перед запросом на слияние** |
+| `make hooks` | Включить git-хук: `make verify` перед каждым `git push` |
+
+### make verify
+
+| Шаг | Команда | Что проверяет |
+|---|---|---|
+| 1 | `make policy` | Правила проекта: версии зафиксированы и установлены, тесты не пропускаются, пороги не снижены, исключения анализаторов обоснованы (`tools/policy.py`) |
+| 2 | `make format-check` | Форматирование кода (`ruff format --check`) |
+| 3 | `make lint-check` | Линтер: ошибки, стиль, порядок импортов, `print` в коде (`ruff check`) |
+| 4 | `make sast` | Статический анализ безопасности (`bandit`), отчёт `reports/bandit.html` |
+| 5 | `make test` | Unit- и интеграционные тесты на тестовой базе, покрытие не ниже порога; отчёты `reports/junit.xml`, `reports/htmlcov/index.html`, `reports/coverage.xml` |
+| 6 | `make mutation` | Мутационная проверка: любое изменение условия в `app/rules.py` должно ловиться тестами; отчёт `reports/mutation.txt` |
+
+Подробнее — [docs/TESTING.md](docs/TESTING.md).
+
+## Резервное копирование и восстановление
+
+```bash
+make backup                          # backups/warehouse-ГГГГММДД-ЧЧММСС.dump
+make backups                         # перечень копий
+make restore                         # из последней копии (спросит имя базы)
+make restore FILE=backups/warehouse-20261008-153000.dump YES=1
+```
+
+Копия — архив `pg_dump` в собственном формате; после создания он проверяется
+командой `pg_restore --list`, права на файл — 600 (в копии есть хеши паролей).
+Восстановление сначала проверяет файл, затем сохраняет текущее состояние базы в
+копию `before-restore-…dump` и только после этого заменяет данные — одной
+транзакцией: при ошибке база остаётся прежней. Остановите приложение перед
+восстановлением. Если копия сделана на более старой версии схемы, после
+восстановления выполните `make migrate`.
 
 ## Переменные окружения
 
@@ -77,7 +98,7 @@ make migrate && make seed && make demo_seed
 | `APP_HOST`, `APP_PORT` | Адрес и порт (по умолчанию 127.0.0.1:8000) |
 | `SESSION_HOURS` | Срок действия сеанса, часов (12) |
 | `PASSWORD_MIN_LENGTH` | Минимальная длина пароля (8) |
-| `TEST_DATABASE_URL` | База для `make test` |
+| `TEST_DATABASE_URL` | Отдельная база для тестов, имя оканчивается на `_test` |
 
 Если обязательной переменной нет, приложение не запускается и пишет, какой
 именно переменной не хватает.
@@ -104,7 +125,9 @@ make migrate && make seed && make demo_seed
 | БП-09 | Доступ к операциям — по роли пользователя |
 | БП-10 | Пароль не короче 8 символов, хранится только в виде хеша |
 
-Каждое правило проверяется тестом (`tests/test_rules.py`, `tests/test_api.py`).
+Каждое правило проверяется unit-тестами (`tests/unit/test_rules.py`, включая
+граничные значения) и интеграционными тестами на настоящей базе
+(`tests/integration/`).
 
 ## Структура
 
@@ -112,7 +135,7 @@ make migrate && make seed && make demo_seed
 app/
   config.py     переменные окружения
   db.py         подключение к базе и транзакции
-  models.py     таблицы
+  models.py     таблицы, ограничения и индексы
   rules.py      правила БП-01…БП-10 и ошибки
   services.py   операции (используются и интерфейсом, и API)
   auth.py       пароли и сеанс
@@ -120,10 +143,20 @@ app/
   web.py        экранные формы
   seed.py       начальное наполнение (справочник ОКЕИ + администратор)
   demo_seed.py  демо-данные (опционально)
+  dbadmin.py    резервное копирование и восстановление
   templates/    страницы
 migrations/     миграции Alembic
-tests/          тесты
-docs/           описание API и схема данных
+tests/
+  unit/         правила, сеанс, разбор форм — без базы данных
+  integration/  API, экранные формы, миграции, резервные копии — на тестовой базе
+tools/
+  policy.py     правила проекта (шаг make verify)
+  mutation.py   мутационная проверка тестов (шаг make verify)
+scripts/
+  setup.sh      сценарий первоначальной настройки (make setup)
+.githooks/      git-хук pre-push
+docs/           описание API, схема данных, тестирование
+deploy/         развертывание на серверах Linux
 ```
 
 ## Адреса

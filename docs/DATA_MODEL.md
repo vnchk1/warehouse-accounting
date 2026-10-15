@@ -1,7 +1,8 @@
 # Схема данных
 
-Схема создаётся миграцией `migrations/versions/0001_initial.py`. Изменять схему
-в обход миграций нельзя.
+Схема создаётся и изменяется только миграциями Alembic (`migrations/versions/`,
+см. раздел «Миграции»). Модели `app/models.py` описывают ту же схему — таблицы,
+ограничения и индексы; их совпадение проверяет тест `test_clean_database`.
 
 ## Связи
 
@@ -103,8 +104,18 @@ unit ──1:N──▶ material ──1:N──▶ receipt_item ◀──N:1─
 
 ## Миграции
 
+| Ревизия | Изменение схемы |
+|---|---|
+| `0001_initial` | Шесть таблиц, ограничения, индексы |
+
 ```bash
-make migrate                      # применить
-.venv/bin/alembic downgrade -1    # откатить последнюю
+make migrate                      # применить все (alembic upgrade head)
+make migrate-status               # текущая версия и список миграций
+make migrate-down                 # откатить последнюю (alembic downgrade -1)
+.venv/bin/alembic upgrade 0001    # перейти к определённой версии
 .venv/bin/alembic revision -m "…" # создать новую
 ```
+
+Каждая миграция обязательно имеет `downgrade()`. Проверки миграций — чистая
+база, база с данными, откат каждой миграции — в
+`tests/integration/test_migrations.py` и описаны в [TESTING.md](TESTING.md#миграции).
