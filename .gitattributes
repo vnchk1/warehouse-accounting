@@ -1,0 +1,4 @@
+# скрипты и unit-файлы должны оставаться с LF, иначе bash на сервере споткнётся о \r
+*.sh       text eol=lf
+*.service  text eol=lf
+*.example  text eol=lf

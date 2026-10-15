@@ -64,9 +64,8 @@ def wants_json(request: Request) -> bool:
 
 
 @app.exception_handler(AppError)
-async def handle_app_error(request: Request, error: Exception) -> Response:
+async def handle_app_error(request: Request, error: AppError) -> Response:
     """Ошибки предметной области: понятное сообщение вместо трассировки."""
-    assert isinstance(error, AppError)
     if wants_json(request):
         return JSONResponse(error.payload(), status_code=error.status)
     if error.status == 401:
@@ -82,9 +81,8 @@ async def handle_app_error(request: Request, error: Exception) -> Response:
 
 
 @app.exception_handler(RequestValidationError)
-async def handle_validation_error(request: Request, error: Exception) -> Response:
+async def handle_validation_error(request: Request, error: RequestValidationError) -> Response:
     """Некорректный запрос: перечисляем поля, которые не прошли проверку."""
-    assert isinstance(error, RequestValidationError)
     fields = [".".join(str(part) for part in item["loc"][1:]) for item in error.errors()]
     message = "Некорректные данные запроса: " + ", ".join(field for field in fields if field)
     if wants_json(request):
@@ -113,7 +111,7 @@ def main() -> Any:
     import uvicorn
 
     settings = get_settings()
-    print(f"База данных: {hide_password(settings.database_url)}")  # noqa: T201
+    print(f"База данных: {hide_password(settings.database_url)}")  # noqa: T201 — сообщение при запуске
     uvicorn.run("app.main:app", host=settings.app_host, port=settings.app_port, reload=True)
 
 

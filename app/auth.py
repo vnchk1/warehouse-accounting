@@ -31,9 +31,10 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password_hash: str, password: str) -> bool:
+    """Пароль соответствует хешу. Повреждённый хеш — это отказ во входе, а не сбой."""
     try:
         return _hasher.verify(password_hash, password)
-    except (VerifyMismatchError, VerificationError, InvalidHashError):
+    except (VerifyMismatchError, VerificationError, InvalidHashError, UnicodeEncodeError):
         return False
 
 
@@ -90,6 +91,10 @@ def find_user(request: Request, db: SessionDep, settings: SettingsDep) -> User |
     """Пользователь сеанса или None (страница входа)."""
     user_id = _user_id_from_cookie(request, settings)
     user = db.get(User, user_id) if user_id else None
+    if user is not None:
+        # Отвязываем от сеанса базы данных: при откате транзакции из-за ошибки
+        # данные пользователя остаются доступны странице с сообщением об ошибке.
+        db.expunge(user)
     request.state.user = user
     return user
 

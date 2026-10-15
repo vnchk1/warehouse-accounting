@@ -3,17 +3,23 @@
 
 # виртуальное окружение и кэши Python
 .venv/
+.venv
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
 
+# отчёты проверок (make verify) и резервные копии базы (make backup)
+reports/
+.coverage
+backups/
+*.dump
+
 # среды разработки и ОС
 .idea/
 .vscode/
 .DS_Store
 
-# журналы и выгрузки
+# журналы
 *.log
-*.dump

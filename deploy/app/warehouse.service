@@ -1,0 +1,41 @@
+# Служба «Складской учёт». Устанавливается в /etc/systemd/system/warehouse.service
+# Управление: systemctl start|stop|restart|status warehouse; журнал: journalctl -u warehouse
+[Unit]
+Description=Warehouse accounting (FastAPI + Uvicorn)
+Documentation=file:///opt/warehouse/README.md
+Wants=network-online.target
+After=network-online.target
+# не более 5 перезапусков за 5 минут, дальше служба остаётся в состоянии failed
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=warehouse
+Group=warehouse
+WorkingDirectory=/opt/warehouse
+# настройки и пароли — вне каталога с кодом; файл читает systemd до смены пользователя
+EnvironmentFile=/etc/warehouse/warehouse.env
+ExecStart=/opt/warehouse/.venv/bin/uvicorn app.main:app --host ${APP_HOST} --port ${APP_PORT}
+SyslogIdentifier=warehouse
+
+# автоматический перезапуск после аварийного завершения (п. 9)
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+# ограничения: служба ничего не пишет на диск и не получает привилегий
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+#!/bin/sh
+# git-хук pre-push: изменения уходят в общий репозиторий только после успешного
+# make verify (CONTRIBUTING.md). Включается командой make hooks (её выполняет
+# make setup). Обходить хук (git push --no-verify) запрещено.
+echo "pre-push: запускается make verify — обязательный набор проверок"
+if ! make verify; then
+    echo "pre-push: make verify не пройден, git push отменён. Исправьте замечания выше." >&2
+    exit 1
+fi

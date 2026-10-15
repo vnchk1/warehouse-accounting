@@ -182,15 +182,15 @@ def save_material(
             unit = Unit(code=code, name=unit_name, okei_code=code_okei, is_integer=is_integer)
             db.add(unit)
             db.flush()
-        material.unit_id = unit.id
     elif unit_id:
         # Если передан unit_id (из API)
         unit = db.get(Unit, unit_id)
         if unit is None:
             raise rules.AppError("Единица измерения не найдена", rule="БП-01", field="unit_id")
-        material.unit_id = unit.id
     else:
         raise rules.AppError("Единица измерения обязательна", rule="БП-01", field="okei_code")
+    # Связь, а не только внешний ключ: иначе в ответе осталась бы прежняя единица.
+    material.unit = unit
 
     if material_id is None:
         db.add(material)
@@ -372,7 +372,7 @@ def create_user(
     full_name: str,
     role: str,
     password: str,
-    password_min_length: int = 8,
+    password_min_length: int,
 ) -> User:
     rules.require_admin(actor, "создание учётной записи")
     if role not in ("admin", "storekeeper"):
