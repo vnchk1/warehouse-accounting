@@ -74,6 +74,8 @@ MATERIALS: list[tuple[str, str, str]] = [
 #: Поступления: сколько создать и за какой период.
 RECEIPT_COUNT = 28
 PERIOD_DAYS = 180
+#: Виды документов поставщика для номеров накладных (БП-11)
+INVOICE_PREFIXES = ("ТН", "УПД", "ТОРГ12")
 #: Цена за единицу: минимум и максимум, в рублях.
 PRICE_RANGE: dict[str, tuple[int, int]] = {
     "168": (4_200, 9_800),
@@ -160,7 +162,11 @@ def fill(session: Session, settings: Settings) -> int:
         receipt_date = today - timedelta(days=random_source.randrange(0, PERIOD_DAYS))
         supplier = suppliers[number % len(suppliers)]
         receipt = services.create_receipt(
-            session, admin, receipt_date=receipt_date, supplier_id=supplier.id
+            session,
+            admin,
+            receipt_date=receipt_date,
+            supplier_id=supplier.id,
+            invoice_number=f"{INVOICE_PREFIXES[number % 3]}-{1000 + 7 * number}",
         )
         # 2–5 разных материалов в документе: повторы в одном документе запрещены
         for material, okei_code in random_source.sample(materials, random_source.randrange(2, 6)):

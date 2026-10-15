@@ -273,8 +273,10 @@ def _receipts_page(
     date_to: date | None = None,
     supplier_id: int | None = None,
     error: str | None = None,
+    values: dict[str, Any] | None = None,
 ) -> Any:
     """Страница перечня поступлений с отбором по периоду и поставщику."""
+    today = date.today()
     return page(
         request,
         "receipts.html",
@@ -285,7 +287,8 @@ def _receipts_page(
         ),
         suppliers=services.list_suppliers(db),
         filters={"date_from": date_from, "date_to": date_to, "supplier_id": supplier_id},
-        today=date.today(),
+        today=today,
+        values=values or {"receipt_date": today.isoformat()},
     )
 
 
@@ -315,16 +318,23 @@ def receipts_create(
     user: CurrentUser,
     receipt_date: Annotated[str, Form()] = "",
     supplier_id: Annotated[str, Form()] = "",
+    invoice_number: Annotated[str, Form()] = "",
 ) -> Any:
+    values = {
+        "receipt_date": receipt_date,
+        "supplier_id": opt_id(supplier_id),
+        "invoice_number": invoice_number,
+    }
     try:
         receipt = services.create_receipt(
             db,
             user,
             receipt_date=req_date(receipt_date, field="receipt_date", title="Дата"),
             supplier_id=req_id(supplier_id, field="supplier_id", title="Поставщик"),
+            invoice_number=invoice_number,
         )
     except rules.AppError as error:
-        return _receipts_page(request, db, user, error=error.message)
+        return _receipts_page(request, db, user, error=error.message, values=values)
     return go(f"/receipts/{receipt.id}", "Поступление создано")
 
 

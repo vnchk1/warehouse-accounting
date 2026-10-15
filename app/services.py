@@ -250,11 +250,25 @@ def get_receipt(db: Session, receipt_id: int) -> Receipt:
     return receipt
 
 
-def create_receipt(db: Session, user: User, *, receipt_date: date, supplier_id: int) -> Receipt:
+def create_receipt(
+    db: Session, user: User, *, receipt_date: date, supplier_id: int, invoice_number: str
+) -> Receipt:
     supplier = get_supplier(db, supplier_id)
+    invoice = rules.validate_invoice_number(invoice_number)
+    # БП-11: одна накладная поставщика не оприходуется дважды
+    same = db.execute(
+        select(Receipt).where(Receipt.supplier_id == supplier.id, Receipt.invoice_number == invoice)
+    ).scalar_one_or_none()
+    if same is not None:
+        raise rules.conflict(
+            f"Накладная № {invoice} поставщика «{supplier.name}» уже оприходована: "
+            f"поступление № {same.id} от {same.receipt_date:%d.%m.%Y}",
+            rule="БП-11",
+        )
     receipt = Receipt(
         receipt_date=rules.validate_receipt_date(receipt_date),
         supplier_id=supplier.id,
+        invoice_number=invoice,
         created_by=user.id,
     )
     db.add(receipt)

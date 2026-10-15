@@ -67,6 +67,7 @@ unit ──1:N──▶ material ──1:N──▶ receipt_item ◀──N:1─
 | `id` | serial | первичный ключ, он же номер документа |
 | `receipt_date` | date | не ранее 01.01.2000 (`ck_receipt_date`); «не в будущем» проверяет приложение |
 | `supplier_id` | integer | ссылка на `supplier` |
+| `invoice_number` | varchar(30) | номер накладной поставщика; не пустой, без пробелов по краям (`ck_receipt_invoice`); пара (`supplier_id`, `invoice_number`) уникальна (`uq_receipt_invoice`) |
 | `created_by` | integer | ссылка на `app_user` |
 | `created_at` | timestamptz | момент создания |
 
@@ -101,12 +102,22 @@ unit ──1:N──▶ material ──1:N──▶ receipt_item ◀──N:1─
 | БП-08 запись со ссылками не удаляется | `rules.database_error` | внешние ключи `ON DELETE RESTRICT` |
 | БП-09 доступ по ролям | `rules.require_admin` | `ck_user_role` |
 | БП-10 пароль ≥ 8 символов, хранится хеш | `rules.validate_password`, `auth.hash_password` | — |
+| БП-11 номер накладной обязателен, у поставщика не повторяется | `rules.validate_invoice_number`, `services.create_receipt` | `ck_receipt_invoice`, `uq_receipt_invoice` |
 
 ## Миграции
 
 | Ревизия | Изменение схемы |
 |---|---|
 | `0001_initial` | Шесть таблиц, ограничения, индексы |
+| `0002_receipt_invoice_number` | `receipt.invoice_number` — новый столбец, пока необязательный |
+| `0003_fill_invoice_number` | Существующим поступлениям — условный номер `БН-<id>`; столбец обязательный |
+| `0004_invoice_number_rule` | Правило БП-11 в базе: `uq_receipt_invoice`, `ck_receipt_invoice` |
+
+Миграции 0002–0004 вводят новую функцию — номер накладной поставщика — в три
+шага, чтобы обновление шло без ошибок и на чистой базе, и на базе, где уже есть
+поступления: сначала столбец без ограничений, затем заполнение старых строк,
+затем ограничения. Каждый шаг откатывается отдельно; откат 0003 очищает только
+условные номера `БН-…`, номера, введённые пользователями, сохраняются.
 
 ```bash
 make migrate                      # применить все (alembic upgrade head)

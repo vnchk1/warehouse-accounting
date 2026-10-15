@@ -364,7 +364,8 @@ def test_item_for_unknown_material_or_receipt(signed_in: TestClient, data: dict[
 )
 def test_receipt_date_is_checked(signed_in: TestClient, data: dict[str, Any], day: date) -> None:
     response = signed_in.post(
-        f"{V1}/receipts", json={"receipt_date": str(day), "supplier_id": data["supplier"].id}
+        f"{V1}/receipts",
+        json={"receipt_date": str(day), "supplier_id": data["supplier"].id, "invoice_number": "1"},
     )
     assert response.status_code == 422
     assert error_of(response)["rule"] == "БП-04"
@@ -377,9 +378,93 @@ def test_receipt_date_boundaries_are_accepted(signed_in: TestClient, data: dict[
 
 def test_receipt_for_unknown_supplier(signed_in: TestClient) -> None:
     response = signed_in.post(
-        f"{V1}/receipts", json={"receipt_date": "2026-01-01", "supplier_id": 99}
+        f"{V1}/receipts",
+        json={"receipt_date": "2026-01-01", "supplier_id": 99, "invoice_number": "1"},
     )
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Номер накладной поставщика (БП-11)
+# ---------------------------------------------------------------------------
+def test_invoice_number_is_saved(signed_in: TestClient, data: dict[str, Any]) -> None:
+    receipt = new_receipt(signed_in, data["supplier"].id, invoice="  УПД   12/2026 ")
+    assert receipt["invoice_number"] == "УПД 12/2026"  # пробелы приведены к одному
+    card = signed_in.get(f"{V1}/receipts/{receipt['id']}").json()
+    assert card["invoice_number"] == "УПД 12/2026"
+    listed = signed_in.get(f"{V1}/receipts").json()
+    assert listed[0]["invoice_number"] == "УПД 12/2026"
+
+
+def test_invoice_number_is_required(signed_in: TestClient, data: dict[str, Any]) -> None:
+    missing = signed_in.post(
+        f"{V1}/receipts", json={"receipt_date": "2026-01-10", "supplier_id": data["supplier"].id}
+    )
+    assert missing.status_code == 422
+    assert error_of(missing)["code"] == "BAD_REQUEST"
+    for wrong in ("", "   ", "№", "ТН#15", "Н" * 31):
+        response = signed_in.post(
+            f"{V1}/receipts",
+            json={
+                "receipt_date": "2026-01-10",
+                "supplier_id": data["supplier"].id,
+                "invoice_number": wrong,
+            },
+        )
+        assert response.status_code == 422, wrong
+        assert (error_of(response)["rule"], error_of(response)["field"]) == (
+            "БП-11",
+            "invoice_number",
+        )
+    assert signed_in.get(f"{V1}/receipts").json() == []
+
+
+def test_invoice_is_not_received_twice(signed_in: TestClient, data: dict[str, Any]) -> None:
+    """Одна накладная поставщика не оприходуется дважды; у другого поставщика — можно."""
+    first = new_receipt(signed_in, data["supplier"].id, "2026-01-10", invoice="ТН-15")
+    again = signed_in.post(
+        f"{V1}/receipts",
+        json={
+            "receipt_date": "2026-01-12",
+            "supplier_id": data["supplier"].id,
+            "invoice_number": " ТН-15 ",
+        },
+    )
+    assert again.status_code == 409
+    assert error_of(again)["rule"] == "БП-11"
+    message = error_of(again)["message"]
+    assert f"поступление № {first['id']} от 10.01.2026" in message
+    assert data["supplier"].name in message
+
+    other = signed_in.post(f"{V1}/suppliers", json={"name": "АО «Астра»", "inn": "6371292619"})
+    assert new_receipt(signed_in, other.json()["id"], invoice="ТН-15")["invoice_number"] == "ТН-15"
+    # другой номер у того же поставщика — можно, регистр различается
+    assert new_receipt(signed_in, data["supplier"].id, invoice="тн-15")["invoice_number"] == "тн-15"
+
+    # после удаления ошибочного поступления номер освобождается
+    assert signed_in.delete(f"{V1}/receipts/{first['id']}").status_code == 204
+    assert new_receipt(signed_in, data["supplier"].id, invoice="ТН-15")["invoice_number"] == "ТН-15"
+
+
+def test_invoice_rule_in_database(data: dict[str, Any]) -> None:
+    """БП-11 защищён и ограничениями базы — на случай одновременного ввода."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    from app import db, rules
+
+    insert = text(
+        "INSERT INTO receipt (receipt_date, supplier_id, created_by, invoice_number) "
+        "VALUES ('2026-01-10', :supplier, :user, :number)"
+    )
+    values = {"supplier": data["supplier"].id, "user": data["admin"].id}
+    with db.engine().begin() as connection:
+        connection.execute(insert, {**values, "number": "ТН-1"})
+    for number, constraint in (("ТН-1", "uq_receipt_invoice"), (" ТН-2", "ck_receipt_invoice")):
+        with pytest.raises(IntegrityError) as error, db.engine().begin() as connection:
+            connection.execute(insert, {**values, "number": number})
+        assert error.value.orig.diag.constraint_name == constraint
+        assert rules.database_error(constraint).rule == "БП-11"
 
 
 def test_receipt_list_filters(signed_in: TestClient, data: dict[str, Any]) -> None:

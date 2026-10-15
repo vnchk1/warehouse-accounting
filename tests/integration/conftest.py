@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import functools
+import itertools
 import os
 import subprocess
 import sys
@@ -208,10 +209,21 @@ def new_material(
     return response.json()
 
 
+_invoices = itertools.count(1)
+
+
 def new_receipt(
-    client: TestClient, supplier_id: int, day: date | str | None = None
+    client: TestClient,
+    supplier_id: int,
+    day: date | str | None = None,
+    invoice: str | None = None,
 ) -> dict[str, Any]:
-    payload = {"receipt_date": str(day or date.today()), "supplier_id": supplier_id}
+    """Поступление; номер накладной по умолчанию — новый при каждом вызове."""
+    payload = {
+        "receipt_date": str(day or date.today()),
+        "supplier_id": supplier_id,
+        "invoice_number": invoice or f"ТН-{next(_invoices)}",
+    }
     response = client.post(f"{V1}/receipts", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
