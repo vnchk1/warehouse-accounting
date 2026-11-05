@@ -1,0 +1,4 @@
+# Настройки actionlint (make guard): метка self-hosted runner на wa-app01 (deploy/ci/README.md)
+self-hosted-runner:
+  labels:
+    - warehouse-registry

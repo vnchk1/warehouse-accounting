@@ -1,0 +1,404 @@
+# CI «Складской учёт» (ЛР5): независимый обязательный барьер перед сборкой и публикацией
+# образа. Подробности — docs/CI.md.
+#
+#   guard ─┐
+#   style ─┤
+#   tests ─┤
+#   migrations ─┤
+#   backup ─┼──────────────────────────────► publish (только master: реестр на wa-app01)
+#   security ─┤
+#   container ──► build ──► image-scan ─┘
+#
+# Каждое задание выполняет те же команды make, что make verify и make container-check у
+# разработчика, с теми же версиями. Совпадение проверяет make guard (tools/ci_guard.py).
+# Образ публикуется, только если успешны ВСЕ задания проверки (needs без always()).
+# Критический файл приёмки: изменения одобряют владельцы из .github/CODEOWNERS.
+
+name: CI
+
+on:
+  # отправка изменений в любую ветку, в том числе в master после слияния
+  push:
+    branches: ["**"]
+  # запрос на слияние в основную ветку; метки — для согласованного ослабления (make guard)
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  # ручной запуск для любой ветки (демонстрация остановки на ошибке)
+  workflow_dispatch:
+
+# Токен заданий может только читать репозиторий
+permissions:
+  contents: read
+
+# Новая отправка в ту же ветку отменяет устаревший прогон; в master прогоны не отменяются
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+env:
+  # основная ветка: с ней make guard и make secrets сравнивают изменения
+  BASE_REF: origin/master
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Охрана приёмки: pipeline, CODEOWNERS, удаление тестов и ослабление правил
+  # -------------------------------------------------------------------------
+  guard:
+    name: Охрана приёмки
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          tools: "true"
+      - name: Программа охраны — из основной ветки
+        # Изменение tools/ci_guard.py в запросе на слияние не может ослабить проверку
+        # этого же запроса: действует версия, уже прошедшая проверку и слияние.
+        run: |
+          if git cat-file -e "$BASE_REF:tools/ci_guard.py" 2>/dev/null; then
+            git show "$BASE_REF:tools/ci_guard.py" > "$RUNNER_TEMP/ci_guard.py"
+            echo "GUARD=$RUNNER_TEMP/ci_guard.py" >> "$GITHUB_ENV"
+            echo "Используется tools/ci_guard.py из $BASE_REF"
+          else
+            echo "В $BASE_REF ещё нет tools/ci_guard.py — используется версия из этой ветки"
+          fi
+      - name: make guard
+        run: make guard
+      - name: Отчёт
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-guard
+          path: reports/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Стиль кода и правила проекта
+  # -------------------------------------------------------------------------
+  style:
+    name: Стиль и правила проекта
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: make policy
+        run: make policy
+      - name: make format-check
+        run: make format-check
+      - name: make lint-check
+        run: make lint-check
+
+  # -------------------------------------------------------------------------
+  # Тесты: отдельная тестовая база в контейнере, тот же PostgreSQL, что в compose.yaml
+  # -------------------------------------------------------------------------
+  tests:
+    name: Тесты
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16.15-trixie@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
+        env:
+          POSTGRES_USER: warehouse
+          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
+          POSTGRES_DB: warehouse_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U warehouse -d warehouse_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://warehouse:${{ secrets.CI_DB_PASSWORD }}@localhost:5432/warehouse_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          postgres-client: "true"
+      - name: make test
+        run: make test
+      - name: make mutation
+        run: make mutation
+      - name: Отчёты тестов, покрытия и мутационной проверки
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-tests
+          path: reports/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Миграции: пустая база → последняя версия → откат по шагу → снова последняя
+  # -------------------------------------------------------------------------
+  migrations:
+    name: Миграции
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16.15-trixie@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
+        env:
+          POSTGRES_USER: warehouse
+          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
+          POSTGRES_DB: warehouse_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U warehouse -d warehouse_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://warehouse:${{ secrets.CI_DB_PASSWORD }}@localhost:5432/warehouse_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: make migrations-check
+        run: make migrations-check
+      - name: Отчёт
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-migrations
+          path: reports/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Резервное копирование: копия → повреждение → восстановление
+  # -------------------------------------------------------------------------
+  backup:
+    name: Резервное копирование
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16.15-trixie@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
+        env:
+          POSTGRES_USER: warehouse
+          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
+          POSTGRES_DB: warehouse_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U warehouse -d warehouse_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://warehouse:${{ secrets.CI_DB_PASSWORD }}@localhost:5432/warehouse_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          postgres-client: "true"
+      - name: make backup-check
+        run: make backup-check
+      - name: Отчёт
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-backup
+          path: reports/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Безопасность: анализ кода, поиск секретов, уязвимости зависимостей
+  # -------------------------------------------------------------------------
+  security:
+    name: Безопасность
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # make secrets проверяет и коммиты ветки, а не только файлы
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          tools: "true"
+      - name: make sast
+        run: make sast
+      - name: make secrets
+        run: make secrets
+      - name: make deps-audit
+        run: make deps-audit
+      - name: Отчёты анализаторов
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-security
+          path: reports/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Контейнерная проверка файлов окружения (до сборки)
+  # -------------------------------------------------------------------------
+  container:
+    name: Контейнерная проверка
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Пароли контейнеров (одноразовые, make container-env)
+        run: make container-env
+      - name: make container-policy
+        run: make container-policy
+
+  # -------------------------------------------------------------------------
+  # Сборка образа с тегом коммита и проверка собранного образа
+  # -------------------------------------------------------------------------
+  build:
+    name: Сборка образа
+    needs: container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Тег образа связан с коммитом
+        id: tag
+        run: |
+          tag=$(make -s image-tag)
+          if [[ $tag != *-"${GITHUB_SHA::12}" ]]; then
+            echo "::error::тег $tag не содержит коммит ${GITHUB_SHA::12}"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Тег образа: warehouse-app:$tag (коммит $GITHUB_SHA)"
+      - name: Пароли контейнеров (одноразовые, make container-env)
+        run: make container-env
+      - name: make container-build
+        run: make container-build
+      - name: make container-image-check
+        run: make container-image-check
+      - name: Образ для следующих заданий
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          mkdir -p image
+          docker image inspect --format '{{.Id}}' "warehouse-app:$TAG" > image/image-id.txt
+          docker save "warehouse-app:$TAG" | gzip -1 > image/image.tar.gz
+          echo "Образ warehouse-app:$TAG, $(cat image/image-id.txt), $(du -h image/image.tar.gz | cut -f1)"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: image/
+          retention-days: 7
+          compression-level: 0
+
+  # -------------------------------------------------------------------------
+  # Анализ собранного образа: уязвимости пакетов ОС и Python
+  # -------------------------------------------------------------------------
+  image-scan:
+    name: Анализ образа
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      APP_IMAGE_TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          python: "false"
+          tools: "true"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image
+      - name: Загрузка проверенного образа
+        run: |
+          gunzip -c "$RUNNER_TEMP/image/image.tar.gz" | docker load
+          test "$(docker image inspect --format '{{.Id}}' "warehouse-app:$APP_IMAGE_TAG")" \
+            = "$(cat "$RUNNER_TEMP/image/image-id.txt")"
+      - name: Дата для кэша базы уязвимостей
+        id: today
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Кэш базы уязвимостей trivy (обновляется раз в сутки)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ steps.today.outputs.date }}
+          restore-keys: trivy-db-
+      - name: make image-scan
+        run: make image-scan
+      - name: Отчёт
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-image-scan
+          path: reports/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Публикация в локальный реестр на wa-app01 — только после успеха всех проверок.
+  # Выполняется на self-hosted runner стенда; код репозитория там не запускается:
+  # публикуется ровно тот файл образа, который собрало и проверило задание build.
+  # -------------------------------------------------------------------------
+  publish:
+    name: Публикация образа
+    needs: [guard, style, tests, migrations, backup, security, container, build, image-scan]
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/master')
+      || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, warehouse-registry]
+    # окружение с секретами реестра; доступно только ветке master (docs/CI.md)
+    environment: registry
+    timeout-minutes: 15
+    env:
+      APP_IMAGE_TAG: ${{ needs.build.outputs.tag }}
+      REGISTRY: 127.0.0.1:5000
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image
+      - name: Загрузка образа и сверка с проверенным
+        run: |
+          gunzip -c "$RUNNER_TEMP/image/image.tar.gz" | docker load
+          expected=$(cat "$RUNNER_TEMP/image/image-id.txt")
+          actual=$(docker image inspect --format '{{.Id}}' "warehouse-app:$APP_IMAGE_TAG")
+          if [[ $actual != "$expected" ]]; then
+            echo "::error::образ $actual не совпадает с проверенным $expected"
+            exit 1
+          fi
+      - name: Публикация в реестр
+        env:
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          target="$REGISTRY/warehouse-app:$APP_IMAGE_TAG"
+          # учётные данные — во временном каталоге задания, а не в домашнем каталоге runner
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker"
+          printf '%s' "$REGISTRY_PASSWORD" |
+            docker login "$REGISTRY" --username "$REGISTRY_USER" --password-stdin
+          docker tag "warehouse-app:$APP_IMAGE_TAG" "$target"
+          docker push "$target"
+          digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$target")
+          docker logout "$REGISTRY"
+          docker image rm "$target" "warehouse-app:$APP_IMAGE_TAG" >/dev/null
+          {
+            echo "## Образ опубликован"
+            echo ""
+            echo "- тег: \`$target\`"
+            echo "- коммит: \`$GITHUB_SHA\`"
+            echo "- дайджест: \`$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Опубликован $target ($digest)"
