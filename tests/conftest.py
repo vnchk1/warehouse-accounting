@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 #: Параметры приложения для тестов (переменные окружения, как в .env.example)
 TEST_SETTINGS = {
-    "SECRET_KEY": "test-secret-key-0123456789abcdef",
+    "SECRET_KEY": "test-secret-key-0123456789abcdef",  # gitleaks:allow — ключ только для тестов
     "ADMIN_LOGIN": "admin",
     "ADMIN_PASSWORD": "admin-password",
     "APP_HOST": "127.0.0.1",

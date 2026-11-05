@@ -1,0 +1,36 @@
+# Владельцы критических файлов приёмки (ЛР5, пп. 13–14).
+#
+# Запрос на слияние, который меняет любой файл ниже, нельзя слить без одобрения
+# владельца: правило защиты ветки master «Require review from Code Owners»
+# (deploy/ci/protect_master.sh). Свой запрос автор одобрить не может, поэтому у
+# каждой строки должно быть не меньше двух владельцев — участники команды.
+# Замените @ghaedaaa логином второго участника на GitHub (у него должен быть доступ
+# на запись в репозиторий), иначе GitHub покажет ошибку в этом файле.
+#
+# Полноту списка проверяет make guard (tools/ci_guard.py, CRITICAL).
+
+# pipeline, CODEOWNERS, git-хуки
+/.github/            @vnchk1 @ghaedaaa
+/.githooks/          @vnchk1 @ghaedaaa
+
+# тесты и инструменты проверки
+/tests/              @vnchk1 @ghaedaaa
+/tools/              @vnchk1 @ghaedaaa
+
+# команды и настройки анализаторов, тестов, покрытия
+/Makefile            @vnchk1 @ghaedaaa
+/pyproject.toml      @vnchk1 @ghaedaaa
+/.gitleaks.toml      @vnchk1 @ghaedaaa
+/.trivyignore        @vnchk1 @ghaedaaa
+
+# схема данных: миграцию нельзя менять после слияния (CONTRIBUTING.md)
+/migrations/         @vnchk1 @ghaedaaa
+
+# образ и контейнерное окружение
+/Dockerfile          @vnchk1 @ghaedaaa
+/.dockerignore       @vnchk1 @ghaedaaa
+/compose.yaml        @vnchk1 @ghaedaaa
+/requirements.lock   @vnchk1 @ghaedaaa
+
+# правила внесения изменений
+/CONTRIBUTING.md     @vnchk1 @ghaedaaa

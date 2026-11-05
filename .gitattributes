@@ -6,3 +6,6 @@ Dockerfile     text eol=lf
 *.yaml         text eol=lf
 *.conf         text eol=lf
 *.lock         text eol=lf
+*.yml          text eol=lf
+*.toml         text eol=lf
+CODEOWNERS     text eol=lf

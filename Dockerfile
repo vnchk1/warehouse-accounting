@@ -8,7 +8,7 @@
 # ---------------------------------------------------------------------------
 # Стадия 1: виртуальное окружение с зависимостями
 # ---------------------------------------------------------------------------
-FROM python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS build
+FROM python:3.12.16-slim-trixie@sha256:e695ab189fa2d082b1c61c69a6b888a5adeca61ceeccad107b1ed2a125721a9e AS build
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -23,13 +23,9 @@ RUN python -m venv /opt/venv \
 # ---------------------------------------------------------------------------
 # Стадия 2: итоговый образ — только интерпретатор, окружение и код
 # ---------------------------------------------------------------------------
-FROM python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS runtime
+FROM python:3.12.16-slim-trixie@sha256:e695ab189fa2d082b1c61c69a6b888a5adeca61ceeccad107b1ed2a125721a9e AS runtime
 
 ARG APP_UID=10001
-ARG VERSION=0.1.0
-LABEL org.opencontainers.image.title="warehouse" \
-      org.opencontainers.image.description="Складской учёт: материалы, поставщики, поступления" \
-      org.opencontainers.image.version="${VERSION}"
 
 # Служебный пользователь без пароля, оболочки и домашнего каталога
 RUN groupadd --system --gid "${APP_UID}" warehouse \
@@ -49,6 +45,15 @@ COPY alembic.ini pyproject.toml ./
 COPY migrations ./migrations
 COPY app ./app
 RUN python -m compileall -q app migrations
+
+# Метки — после всех RUN: версия и коммит меняются с каждым коммитом, а слои выше
+# остаются в кэше сборки. Коммит (ЛР5, п. 9): в теге образа — начало хеша, в метке — полностью.
+ARG VERSION=0.1.0
+ARG REVISION=unknown
+LABEL org.opencontainers.image.title="warehouse" \
+      org.opencontainers.image.description="Складской учёт: материалы, поставщики, поступления" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}"
 
 # Всё дальнейшее — от непривилегированного пользователя (числовой UID: проверяется без /etc/passwd)
 USER ${APP_UID}:${APP_UID}

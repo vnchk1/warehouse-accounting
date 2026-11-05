@@ -3,12 +3,13 @@
 1. Версии зависимостей зафиксированы точно (==) и установлены именно они.
 2. Тесты не пропускаются: skip, skipif, xfail, pytest.skip() и подобное запрещены.
 3. Пороги не снижаются: покрытие и мутационная проверка не ниже нижних границ ниже.
-4. Набор make verify полный, а его команды не ослаблены ключами вроде -k,
-   --deselect, --ignore, --exit-zero.
+4. Наборы make verify и make container-check полные, а их команды не ослаблены
+   ключами вроде -k, --deselect, --ignore, --exit-zero, --exit-code 0.
 5. Исключения анализаторов только с обоснованием:
    - `# noqa: КОД — причина` (конкретное правило и пояснение);
    - `# nosec BXXX` с пояснением: комментарий «# Безопасно: …» строкой выше
      или `# причина` в той же строке;
+   - `gitleaks:allow — причина` (поиск секретов, ЛР5);
    - каждое исключение в настройках pyproject.toml (ignore, per-file-ignores,
      skips, exclude_dirs, exclude_also, omit, filterwarnings) с комментарием.
 
@@ -35,7 +36,21 @@ MUTATION_FLOOR = 100
 MUTATION_TARGET = "app/rules.py"
 
 CODE_DIRS = ("app", "tests", "tools", "migrations")
-VERIFY_STEPS = ("policy", "format-check", "lint-check", "sast", "test", "mutation")
+VERIFY_STEPS = (
+    "policy",
+    "guard",
+    "format-check",
+    "lint-check",
+    "sast",
+    "secrets",
+    "deps-audit",
+    "test",
+    "mutation",
+    "migrations-check",
+    "backup-check",
+)
+#: Шаги make container-check (контейнерная проверка перед сборкой и публикацией образа)
+CONTAINER_STEPS = ("container-policy", "container-build", "container-image-check", "image-scan")
 #: Ключи, ослабляющие проверки в командах make verify
 WEAKENING = (
     "--deselect",
@@ -48,6 +63,13 @@ WEAKENING = (
     "--skip",
     "--extend-ignore",
     "--lf",
+    "--exit-code 0",
+    "--exit-code=0",
+    "--ignore-vuln",
+    "--ignore-policy",
+    "--skip-dirs",
+    "--skip-files",
+    "--no-git",
 )
 SKIP_CALLS = {"skip", "xfail", "importorskip"}
 SKIP_MARKS = {"skip", "skipif", "xfail"}
@@ -65,6 +87,8 @@ NOQA = re.compile(r"#\s*noqa\b(?P<rest>.*)")
 NOQA_OK = re.compile(r":\s*[A-Z]+[0-9]+(\s*,\s*[A-Z]+[0-9]+)*\s+(—|--|#)\s*\S")
 NOSEC = re.compile(r"#\s*nosec\b(?P<rest>.*)")
 NOSEC_OK = re.compile(r"^\s+B[0-9]{3}(\s*,\s*B[0-9]{3})*(\s+#\s*\S.*)?\s*$")
+GITLEAKS_ALLOW = re.compile(r"gitleaks:allow(?P<rest>.*)")
+GITLEAKS_OK = re.compile(r"^\s+(—|--|#)\s*\S")
 
 problems: list[str] = []
 
@@ -148,10 +172,18 @@ def check_thresholds(settings: dict[str, Any]) -> None:
         if flag not in addopts:
             problem("pyproject.toml", f"в addopts pytest нет обязательного {flag}")
     for flag in WEAKENING:
-        if flag in addopts:
+        if weakened(addopts, flag):
             problem("pyproject.toml", f"addopts pytest ослабляет проверки: {flag.strip()}")
     if pytest_options.get("xfail_strict") is not True:
         problem("pyproject.toml", "нужно xfail_strict = true")
+
+
+def weakened(line: str, flag: str) -> bool:
+    """Есть ли в строке ключ flag: целым словом или «ключ=значение», не частью другого ключа."""
+    flag = flag.strip()
+    if " " in flag or flag.endswith(":"):  # «--exit-code 0», «-p no:»
+        return f" {flag}" in f" {line} "
+    return any(token == flag or token.startswith(flag + "=") for token in line.split())
 
 
 def _recipes(makefile: str) -> dict[str, list[str]]:
@@ -169,16 +201,17 @@ def _recipes(makefile: str) -> dict[str, list[str]]:
 
 def check_makefile() -> None:
     recipes = _recipes((ROOT / "Makefile").read_text(encoding="utf-8"))
-    verify = " ".join(recipes.get("verify", []))
-    for step in VERIFY_STEPS:
-        if f"$(MAKE) --no-print-directory {step}" not in verify:
-            problem("Makefile", f"make verify не запускает шаг {step}")
-    for step in VERIFY_STEPS:
+    for target, steps in (("verify", VERIFY_STEPS), ("container-check", CONTAINER_STEPS)):
+        recipe = " ".join(recipes.get(target, []))
+        for step in steps:
+            if f"$(MAKE) --no-print-directory {step}" not in recipe:
+                problem("Makefile", f"make {target} не запускает шаг {step}")
+    for step in VERIFY_STEPS + CONTAINER_STEPS:
         lines = recipes.get(step, [])
         checking = [line for line in lines if "--exit-zero" not in line or "bandit" not in line]
         for line in checking:
             for flag in WEAKENING:
-                if flag in f" {line} ":
+                if weakened(line, flag):
                     problem("Makefile", f"шаг {step} ослаблен ключом {flag.strip()}: {line}")
     if not any("bandit" in line and "--exit-zero" not in line for line in recipes.get("sast", [])):
         problem("Makefile", "шаг sast должен завершаться ошибкой при найденных уязвимостях")
@@ -211,6 +244,9 @@ def check_inline_exceptions() -> None:
                 justified = "#" in nosec["rest"] or previous.startswith("# Безопасно:")
                 if not NOSEC_OK.match(nosec["rest"]) or not justified:
                     problem(where, "нужно «# nosec BXXX» и пояснение «# Безопасно: …» строкой выше")
+            allow = GITLEAKS_ALLOW.search(comment)
+            if allow and not GITLEAKS_OK.match(allow["rest"]):
+                problem(where, "нужно «# gitleaks:allow — причина»")
 
 
 def check_config_exceptions() -> None:
@@ -265,7 +301,7 @@ def main() -> int:
     print(
         "Правила проекта соблюдены: версии зафиксированы, пропусков тестов нет, "
         f"пороги не ниже {COVERAGE_FLOOR} % (покрытие) и {MUTATION_FLOOR} % (мутации), "
-        "исключения анализаторов обоснованы"
+        "исключения анализаторов обоснованы, наборы make verify и container-check полны"
     )
     return 0
 
