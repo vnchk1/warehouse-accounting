@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import socket
 
 from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -24,6 +25,8 @@ class Settings(BaseSettings):
     app_port: int = 8000
     session_hours: int = 12
     password_min_length: int = 8
+    # идентификатор экземпляра в ответах; пусто — имя узла (в контейнере это его ID)
+    instance_id: str = ""
 
 
 @functools.lru_cache(maxsize=1)
@@ -39,6 +42,17 @@ def get_settings() -> Settings:
             lines.append(f"  {name}: {reason}")
         lines.append("Скопируйте .env.example в .env и заполните значения.")
         raise SystemExit("\n".join(lines)) from error
+
+
+def instance_id(settings: Settings | None = None) -> str:
+    """Какой экземпляр приложения ответил: INSTANCE_ID или имя узла.
+
+    Docker задаёт имя узла контейнера равным началу его ID — тому же значению,
+    что показывает docker ps, поэтому при нескольких экземплярах за Nginx видно,
+    какой из них обработал запрос.
+    """
+    value = (settings or get_settings()).instance_id.strip()
+    return value or socket.gethostname()
 
 
 def hide_password(url: str) -> str:

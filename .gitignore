@@ -23,3 +23,6 @@ backups/
 
 # журналы
 *.log
+
+# пароли контейнерного окружения (создаёт make container-env)
+deploy/docker/env/*.env

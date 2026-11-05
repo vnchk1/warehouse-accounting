@@ -1,0 +1,14 @@
+# Контекст сборки — по белому списку: в образ может попасть только перечисленное ниже.
+# Всё остальное (.env, deploy/docker/env/*.env, backups/, .git/, tests/, .venv/, reports/)
+# Docker даже не передаёт сборщику, поэтому секреты в образ попасть не могут.
+*
+
+!app/
+!migrations/
+!alembic.ini
+!pyproject.toml
+!requirements.lock
+
+# кэш Python, если он оказался внутри разрешённых каталогов
+**/__pycache__
+**/*.pyc

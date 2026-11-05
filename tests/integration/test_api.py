@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import socket
 from datetime import date, timedelta
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import get_settings
 from tests.integration.conftest import PASSWORD, V1, add_item, login, new_material, new_receipt
 
 
@@ -21,7 +23,30 @@ def error_of(response: Any) -> dict[str, Any]:
 def test_healthz(client: TestClient) -> None:
     response = client.get("/healthz")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": "0.1.0", "database": "ok"}
+    assert response.json() == {
+        "status": "ok",
+        "version": "0.1.0",
+        "database": "ok",
+        "instance": socket.gethostname(),
+    }
+
+
+@pytest.mark.parametrize("path", ["/healthz", "/login", f"{V1}/units", "/нет-такой-страницы"])
+def test_every_response_names_instance(client: TestClient, path: str) -> None:
+    """Доп. задание: за Nginx видно, какой экземпляр приложения ответил."""
+    assert client.get(path).headers["X-Instance-Id"] == socket.gethostname()
+
+
+def test_instance_id_from_environment(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INSTANCE_ID", "app-7")
+    get_settings.cache_clear()
+    try:
+        response = client.get("/healthz")
+    finally:
+        monkeypatch.delenv("INSTANCE_ID")
+        get_settings.cache_clear()
+    assert response.headers["X-Instance-Id"] == "app-7"
+    assert response.json()["instance"] == "app-7"
 
 
 def test_healthz_without_database(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

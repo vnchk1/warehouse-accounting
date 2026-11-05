@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 from datetime import date
 from typing import Any
 
@@ -42,6 +43,11 @@ def test_login_page(client: TestClient, data: dict[str, Any]) -> None:
     out = form(client, "/logout")
     assert out.headers["location"].startswith("/login?msg=")
     assert client.get("/receipts", follow_redirects=False).status_code == 303
+
+
+def test_page_footer_names_instance(client: TestClient) -> None:
+    footer = f'экземпляр <span class="instance">{socket.gethostname()}</span>'
+    assert footer in client.get("/login").text
 
 
 def test_web_pages_are_available(signed_in: TestClient) -> None:

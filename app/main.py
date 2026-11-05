@@ -15,20 +15,28 @@ from fastapi.staticfiles import StaticFiles
 
 from app import db, web
 from app.api import router as api_router
-from app.config import get_settings, hide_password
+from app.config import get_settings, hide_password, instance_id
 from app.rules import AppError
 from app.web import router as web_router
 
 logger = logging.getLogger("warehouse")
+# журнал сервера uvicorn: его сообщения уровня INFO выводятся без дополнительной настройки
+server_log = logging.getLogger("uvicorn.error")
 
 VERSION = "0.1.0"
+INSTANCE_HEADER = "X-Instance-Id"
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     if not db.is_configured():  # в тестах подключение настраивается заранее
         db.setup()
+    server_log.info("Экземпляр %s запущен", instance_id())
     yield
+    # Сюда uvicorn приходит по SIGTERM (docker stop) после того, как перестал принимать
+    # новые соединения и дождался завершения начатых запросов.
+    db.dispose()
+    server_log.info("Экземпляр %s остановлен, соединения с базой закрыты", instance_id())
 
 
 app = FastAPI(
@@ -44,15 +52,24 @@ app.include_router(api_router)
 app.include_router(web_router)
 
 
+@app.middleware("http")
+async def add_instance_header(request: Request, call_next: Any) -> Response:
+    """Каждый ответ сообщает, какой экземпляр приложения его сформировал."""
+    response: Response = await call_next(request)
+    response.headers[INSTANCE_HEADER] = instance_id()
+    return response
+
+
 @app.get("/healthz", tags=["Служебные"], summary="Проверка работоспособности")
 def healthz() -> Response:
-    """Состояние приложения и доступность базы данных."""
+    """Состояние приложения, доступность базы данных и идентификатор экземпляра."""
     database_ok = db.database_is_available()
     return JSONResponse(
         {
             "status": "ok" if database_ok else "degraded",
             "version": VERSION,
             "database": "ok" if database_ok else "unavailable",
+            "instance": instance_id(),
         },
         status_code=200 if database_ok else 503,
     )

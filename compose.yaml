@@ -1,0 +1,196 @@
+# Контейнерное окружение «Складской учёт» (ЛР4 и дополнительное задание).
+#
+#   nginx ──(backend, внутренняя)──► app × 2 ──(data, внутренняя)──► db ◄── volume pgdata
+#     ▲                                 ▲
+#     └ единственный опубликованный порт └ migrate: миграции и начальные данные перед запуском app
+#
+# Изменять окружение — только через make container-up: сначала выполняется make container-check.
+# Пароли — в deploy/docker/env/*.env (создаёт make container-env, в git и в образ не попадают).
+# Необязательные параметры (файл .env рядом с этим файлом или переменные окружения):
+#   HTTP_PORT (80), APP_REPLICAS (2), APP_IMAGE_TAG (0.1.0), PG_VOLUME (warehouse_pgdata)
+
+name: warehouse
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Общие ограничения: без повышения привилегий и без capabilities Linux
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  # -------------------------------------------------------------------------
+  # PostgreSQL 16 — та же основная версия, что на wa-db01 в ЛР2–ЛР3
+  # -------------------------------------------------------------------------
+  db:
+    image: postgres:16.15-trixie@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
+    <<: *hardening
+    user: postgres
+    restart: unless-stopped
+    env_file:
+      - deploy/docker/env/db.env
+    environment:
+      POSTGRES_DB: warehouse
+      POSTGRES_USER: postgres
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # роли wh_owner и wh_app — один раз, при создании нового volume
+      - ./deploy/docker/db/initdb:/docker-entrypoint-initdb.d:ro
+    networks:
+      - data
+    # порт 5432 не публикуется: базу видят только контейнеры сети data
+    healthcheck:
+      # по TCP: пока идёт первичная инициализация, сервер слушает только сокет,
+      # и проверка не пройдёт раньше времени
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "warehouse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    stop_grace_period: 30s
+    shm_size: 128mb
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+          pids: 200
+        reservations:
+          memory: 256M
+    logging: *logging
+
+  # -------------------------------------------------------------------------
+  # Миграции (роль wh_owner) и начальные данные (роль wh_app); завершается
+  # после выполнения. Экземпляры app запускаются только после успешного завершения.
+  # -------------------------------------------------------------------------
+  migrate:
+    image: warehouse-app:${APP_IMAGE_TAG:-0.1.0}
+    build:
+      context: .
+      args:
+        VERSION: ${APP_IMAGE_TAG:-0.1.0}
+    <<: *hardening
+    read_only: true
+    restart: "no"
+    command: ["sh", "-c", "alembic upgrade head && alembic current && python -m app.seed"]
+    env_file:
+      - deploy/docker/env/app.env
+      - deploy/docker/env/migrate.env
+    networks:
+      - data
+    depends_on:
+      db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+          pids: 50
+    logging: *logging
+
+  # -------------------------------------------------------------------------
+  # Приложение: несколько одинаковых экземпляров, порт наружу не публикуется
+  # -------------------------------------------------------------------------
+  app:
+    image: warehouse-app:${APP_IMAGE_TAG:-0.1.0}
+    build:
+      context: .
+      args:
+        VERSION: ${APP_IMAGE_TAG:-0.1.0}
+    <<: *hardening
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    restart: unless-stopped
+    env_file:
+      - deploy/docker/env/app.env
+    environment:
+      SESSION_HOURS: "12"
+      PASSWORD_MIN_LENGTH: "8"
+    expose:
+      - "8000"
+    networks:
+      - backend
+      - data
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 20s
+    deploy:
+      replicas: ${APP_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+          pids: 100
+        reservations:
+          memory: 128M
+    logging: *logging
+
+  # -------------------------------------------------------------------------
+  # Nginx — единственная точка входа, распределяет запросы между экземплярами app
+  # -------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.30.6-alpine@sha256:970364228b1e4f932abc22d321932816782cca8a20b85a77552a7cfe9acfb3b5
+    <<: *hardening
+    user: "101:101"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:8080"
+    volumes:
+      - ./deploy/docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/nginx-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    stop_grace_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 64M
+          pids: 32
+    logging: *logging
+
+networks:
+  # внешняя сеть: только Nginx, через неё проходит опубликованный порт
+  frontend: {}
+  # Nginx ↔ app; internal — без выхода наружу и без публикации портов
+  backend:
+    internal: true
+  # app и migrate ↔ db; Nginx к базе доступа не имеет
+  data:
+    internal: true
+
+volumes:
+  pgdata:
+    # постоянное имя: данные переживают docker compose down и пересоздание контейнеров;
+    # PG_VOLUME — для восстановления в новый volume (make container-restore-new)
+    name: ${PG_VOLUME:-warehouse_pgdata}
