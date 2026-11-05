@@ -17,11 +17,13 @@ from fastapi.templating import Jinja2Templates
 
 from app import rules, services
 from app.auth import CurrentUser, OptionalUser, SessionDep, SettingsDep, end_session, start_session
+from app.config import instance_id
 from app.models import ROLE_NAMES
 
 router = APIRouter(include_in_schema=False)
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals["role_names"] = ROLE_NAMES
+templates.env.globals["instance_id"] = instance_id
 
 
 def page(request: Request, template: str, status_code: int = 200, **context: Any) -> Any:

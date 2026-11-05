@@ -38,6 +38,12 @@ def engine() -> Engine:
     return _current()[0]
 
 
+def dispose() -> None:
+    """Закрывает соединения пула — при остановке приложения (docker stop, SIGTERM)."""
+    if _connection is not None:
+        _connection[0].dispose()
+
+
 @contextmanager
 def session_scope() -> Iterator[Session]:
     """Одна транзакция: фиксируется при успехе, откатывается при ошибке.

@@ -11,6 +11,7 @@
 - Тесты, проверки и покрытие функций — [docs/TESTING.md](docs/TESTING.md)
 - Правила внесения изменений — [CONTRIBUTING.md](CONTRIBUTING.md)
 - Развертывание на серверах — [deploy/README.md](deploy/README.md)
+- Контейнеры, Nginx и несколько экземпляров — [docs/CONTAINERS.md](docs/CONTAINERS.md)
 
 ## Быстрый старт (Linux, WSL2)
 
@@ -33,6 +34,22 @@ make run       # http://127.0.0.1:8000
 Демонстрационные данные (10 поставщиков, 26 материалов, 28 поступлений):
 `make demo_seed`.
 
+## Запуск в контейнерах (Docker Compose)
+
+Нужны Docker и Compose v2 (`sudo apt install docker.io docker-compose-v2 docker-buildx`).
+Виртуальное окружение и локальный PostgreSQL не нужны.
+
+```bash
+make container-env     # пароли в deploy/docker/env/*.env (один раз)
+make lock              # requirements.lock, если его ещё нет (нужен доступ к PyPI)
+make container-up      # make container-check → сборка → запуск → ожидание готовности
+make container-balance # какие экземпляры отвечают через Nginx
+```
+
+Приложение доступно только через Nginx: `http://<адрес>/` (порт `HTTP_PORT`, 80).
+Изменять окружение — только через `make container-up` (сначала выполняется
+`make container-check`). Подробности — [docs/CONTAINERS.md](docs/CONTAINERS.md).
+
 ## Команды
 
 | Команда | Назначение |
@@ -54,6 +71,9 @@ make run       # http://127.0.0.1:8000
 | `make test-unit` | Только unit-тесты (база данных не нужна) |
 | **`make verify`** | **Обязательный набор проверок перед запросом на слияние** |
 | `make hooks` | Включить git-хук: `make verify` перед каждым `git push` |
+| **`make container-check`** | **Обязательная проверка перед изменением контейнерного окружения** |
+| `make container-up` | Запуск или обновление контейнеров (после `container-check`) |
+| `make container-*` | Копии, восстановление, журналы — см. [docs/CONTAINERS.md](docs/CONTAINERS.md) |
 
 ### make verify
 
@@ -98,6 +118,7 @@ make restore FILE=backups/warehouse-20261008-153000.dump YES=1
 | `APP_HOST`, `APP_PORT` | Адрес и порт (по умолчанию 127.0.0.1:8000) |
 | `SESSION_HOURS` | Срок действия сеанса, часов (12) |
 | `PASSWORD_MIN_LENGTH` | Минимальная длина пароля (8) |
+| `INSTANCE_ID` | Идентификатор экземпляра в ответах; по умолчанию имя узла (в контейнере — его ID) |
 | `TEST_DATABASE_URL` | Отдельная база для тестов, имя оканчивается на `_test` |
 
 Если обязательной переменной нет, приложение не запускается и пишет, какой
@@ -145,6 +166,7 @@ app/
   seed.py       начальное наполнение (справочник ОКЕИ + администратор)
   demo_seed.py  демо-данные (опционально)
   dbadmin.py    резервное копирование и восстановление
+  healthcheck.py проверка состояния для HEALTHCHECK контейнера
   templates/    страницы
 migrations/     миграции Alembic
 tests/
@@ -153,11 +175,15 @@ tests/
 tools/
   policy.py     правила проекта (шаг make verify)
   mutation.py   мутационная проверка тестов (шаг make verify)
+  container_policy.py  правила контейнерного окружения (make container-check)
+  lock.py       создание requirements.lock (make lock)
 scripts/
   setup.sh      сценарий первоначальной настройки (make setup)
 .githooks/      git-хук pre-push
 docs/           описание API, схема данных, тестирование
 deploy/         развертывание на серверах Linux
+  docker/       контейнеры: nginx.conf, роли БД, файлы паролей, скрипты
+Dockerfile, .dockerignore, compose.yaml, requirements.lock   образ и окружение
 ```
 
 ## Адреса
@@ -170,4 +196,4 @@ deploy/         развертывание на серверах Linux
 | `/users` | Пользователи (администратор) |
 | `/api/v1/...` | HTTP API (в том числе `/api/v1/units`) |
 | `/docs` | Описание API |
-| `/healthz` | Проверка работоспособности |
+| `/healthz` | Проверка работоспособности и идентификатор экземпляра (`instance`) |

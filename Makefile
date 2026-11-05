@@ -9,14 +9,19 @@ CODE := app tests tools migrations
 # Каталоги, которые проверяет анализатор безопасности (тесты исключены в pyproject.toml)
 SAST := app migrations tools
 REPORTS := reports
+COMPOSE ?= docker compose
 
 .PHONY: help setup install run migrate migrate-down migrate-status seed demo_seed \
         backup restore backups psql lint policy format-check lint-check sast test \
-        test-unit mutation verify hooks clean
+        test-unit mutation verify hooks clean \
+        container-env lock container-check container-up container-down container-ps \
+        container-logs container-migrate container-balance container-backup \
+        container-backups container-counts container-restore container-restore-new \
+        container-use-volume
 
 help:  ## список команд
 	@grep -E '^[a-z_-]+:.*##' $(MAKEFILE_LIST) | \
-		awk 'BEGIN{FS=":.*## "}{printf "  %-15s %s\n", $$1, $$2}'
+		awk 'BEGIN{FS=":.*## "}{printf "  %-22s %s\n", $$1, $$2}'
 
 # ---------------------------------------------------------------------------
 # Установка и запуск
@@ -109,6 +114,63 @@ verify:  ## ОБЯЗАТЕЛЬНЫЙ набор проверок перед за
 	@echo "==> [6/6] mutation: мутационная проверка тестов"
 	@$(MAKE) --no-print-directory mutation
 	@echo "==> make verify: все проверки пройдены. Отчёты — в каталоге $(REPORTS)/"
+
+# ---------------------------------------------------------------------------
+# Контейнерное окружение (ЛР4): docs/CONTAINERS.md. Нужны Docker и Compose v2;
+# на сервере команды выполняются через sudo. Виртуальное окружение .venv не нужно.
+# ---------------------------------------------------------------------------
+container-env:  ## файлы паролей deploy/docker/env/*.env (случайные значения, 600)
+	bash deploy/docker/init-env.sh
+
+lock:  ## requirements.lock: версии и хеши пакетов образа (нужен доступ к PyPI)
+	bash deploy/docker/lock.sh
+
+container-check:  ## ОБЯЗАТЕЛЬНАЯ проверка перед любым изменением контейнерного окружения
+	@echo "==> [1/3] правила: Dockerfile, .dockerignore, compose.yaml, пароли, requirements.lock"
+	@$(PYTHON) tools/container_policy.py
+	@echo "==> [2/3] сборка образа приложения"
+	$(COMPOSE) build app  # migrate использует тот же образ: параллельная сборка двух сервисов в один тег падает ("already exists")
+	@echo "==> [3/3] собранный образ: пользователь, HEALTHCHECK, отсутствие секретов"
+	@$(PYTHON) tools/container_policy.py --image
+	@echo "==> make container-check: пройдено, окружение можно изменять"
+
+container-up: container-check  ## развернуть или обновить окружение (только после container-check)
+	$(COMPOSE) up -d --remove-orphans
+	bash deploy/docker/wait.sh
+
+container-down:  ## остановить и удалить контейнеры (volume с данными сохраняется)
+	$(COMPOSE) down
+
+container-ps:  ## состояние контейнеров и их проверок
+	$(COMPOSE) ps -a
+
+container-logs:  ## журналы: make container-logs [S=app]
+	$(COMPOSE) logs --tail 100 $(S)
+
+container-migrate:  ## миграции и начальные данные в контейнере migrate
+	$(COMPOSE) run --rm migrate
+
+container-balance:  ## распределение запросов между экземплярами: [N=20]
+	bash deploy/docker/balance.sh $(or $(N),20)
+
+container-backup:  ## резервная копия базы из контейнера db в backups/
+	bash deploy/docker/dbctl.sh backup
+
+container-backups:  ## перечень резервных копий
+	bash deploy/docker/dbctl.sh list
+
+container-counts:  ## число записей в таблицах базы контейнера db
+	bash deploy/docker/dbctl.sh counts
+
+container-restore:  ## восстановление в текущую базу: [FILE=backups/….dump] [YES=1]
+	bash deploy/docker/dbctl.sh restore $(FILE) $(if $(filter 1,$(YES)),--yes)
+
+container-restore-new:  ## восстановление в новый volume: FILE=… VOLUME=…
+	bash deploy/docker/dbctl.sh restore-new "$(FILE)" "$(VOLUME)"
+
+container-use-volume:  ## переключить базу на другой volume: VOLUME=… (через container-check)
+	bash deploy/docker/dbctl.sh use-volume "$(VOLUME)"
+	$(MAKE) --no-print-directory container-up
 
 hooks:  ## git-хук: make verify перед каждым git push
 	git config core.hooksPath .githooks
