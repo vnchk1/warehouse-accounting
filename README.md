@@ -12,10 +12,12 @@
 - Правила внесения изменений — [CONTRIBUTING.md](CONTRIBUTING.md)
 - Развертывание на серверах — [deploy/README.md](deploy/README.md)
 - Контейнеры, Nginx и несколько экземпляров — [docs/CONTAINERS.md](docs/CONTAINERS.md)
+- Непрерывная интеграция (CI), публикация образа, защита приёмки — [docs/CI.md](docs/CI.md)
 
 ## Быстрый старт (Linux, WSL2)
 
-Нужны: Python 3.11+ с модулем venv, PostgreSQL 16, GNU make, git.
+Нужны: Python 3.11+ с модулем venv, PostgreSQL 16, GNU make, git, curl
+(для `make tools`; `make verify` скачивает gitleaks, trivy, actionlint один раз).
 
 ```bash
 sudo apt install python3 python3-venv postgresql postgresql-client make git
@@ -69,7 +71,13 @@ make container-balance # какие экземпляры отвечают чер
 | `make lint` | Исправить форматирование и простые замечания линтера |
 | `make test` | Все тесты с покрытием, отчёты в `reports/` |
 | `make test-unit` | Только unit-тесты (база данных не нужна) |
-| **`make verify`** | **Обязательный набор проверок перед запросом на слияние** |
+| **`make verify`** | **Обязательный набор проверок перед запросом на слияние (те же, что в CI)** |
+| `make tools` | gitleaks, trivy, actionlint точных версий в `.tools/bin` (`tools/tools.lock`) |
+| `make guard` | Охрана приёмки: pipeline, CODEOWNERS, удаление тестов и ослабление правил |
+| `make secrets` | Поиск секретов в файлах и коммитах ветки (gitleaks) |
+| `make deps-audit` | Известные уязвимости зависимостей (pip-audit) |
+| `make migrations-check` | Миграции на временной базе: применение, откат по шагу, повторное применение |
+| `make backup-check` | Копия → повреждение → восстановление на временной базе |
 | `make hooks` | Включить git-хук: `make verify` перед каждым `git push` |
 | **`make container-check`** | **Обязательная проверка перед изменением контейнерного окружения** |
 | `make container-up` | Запуск или обновление контейнеров (после `container-check`) |
@@ -77,14 +85,22 @@ make container-balance # какие экземпляры отвечают чер
 
 ### make verify
 
+Те же шаги выполняет CI (`.github/workflows/ci.yml`) — по заданиям, параллельно;
+совпадение локальных и серверных проверок проверяет `make guard`. Подробнее — [docs/CI.md](docs/CI.md).
+
 | Шаг | Команда | Что проверяет |
 |---|---|---|
 | 1 | `make policy` | Правила проекта: версии зафиксированы и установлены, тесты не пропускаются, пороги не снижены, исключения анализаторов обоснованы (`tools/policy.py`) |
-| 2 | `make format-check` | Форматирование кода (`ruff format --check`) |
-| 3 | `make lint-check` | Линтер: ошибки, стиль, порядок импортов, `print` в коде (`ruff check`) |
-| 4 | `make sast` | Статический анализ безопасности (`bandit`), отчёт `reports/bandit.html` |
-| 5 | `make test` | Unit- и интеграционные тесты на тестовой базе, покрытие не ниже порога; отчёты `reports/junit.xml`, `reports/htmlcov/index.html`, `reports/coverage.xml` |
-| 6 | `make mutation` | Мутационная проверка: любое изменение условия в `app/rules.py` должно ловиться тестами; отчёт `reports/mutation.txt` |
+| 2 | `make guard` | Охрана приёмки: pipeline не ослаблен, CODEOWNERS охватывает критические файлы, тесты не удалены, правила не ослаблены относительно основной ветки (`tools/ci_guard.py`); отчёт `reports/guard.md` |
+| 3 | `make format-check` | Форматирование кода (`ruff format --check`) |
+| 4 | `make lint-check` | Линтер: ошибки, стиль, порядок импортов, `print` в коде (`ruff check`) |
+| 5 | `make sast` | Статический анализ безопасности (`bandit`), отчёт `reports/bandit.html` |
+| 6 | `make secrets` | Поиск секретов (`gitleaks`): файлы репозитория и коммиты ветки; `reports/gitleaks-*.json` |
+| 7 | `make deps-audit` | Известные уязвимости зависимостей образа и окружения (`pip-audit`); `reports/deps-*.md` |
+| 8 | `make test` | Unit- и интеграционные тесты на тестовой базе, покрытие не ниже порога; отчёты `reports/junit.xml`, `reports/htmlcov/index.html`, `reports/coverage.xml` |
+| 9 | `make mutation` | Мутационная проверка: любое изменение условия в `app/rules.py` должно ловиться тестами; отчёт `reports/mutation.txt` |
+| 10 | `make migrations-check` | Миграции на отдельной временной базе; `reports/migrations-check.txt` |
+| 11 | `make backup-check` | Резервная копия и восстановление на отдельной временной базе; `reports/backup-check.txt` |
 
 Подробнее — [docs/TESTING.md](docs/TESTING.md).
 
@@ -172,17 +188,27 @@ migrations/     миграции Alembic
 tests/
   unit/         правила, сеанс, разбор форм — без базы данных
   integration/  API, экранные формы, миграции, резервные копии — на тестовой базе
+  tools/        охрана приёмки: удаление тестов и ослабление правил не проходят
 tools/
   policy.py     правила проекта (шаг make verify)
+  ci_guard.py   охрана приёмки и совпадение проверок CI с make verify (make guard)
   mutation.py   мутационная проверка тестов (шаг make verify)
+  db_check.py   миграции и резервное копирование на временной базе
+  secrets.sh    поиск секретов (make secrets)
+  tools.lock, install_tools.sh  gitleaks, trivy, actionlint с проверкой SHA-256 (make tools)
   container_policy.py  правила контейнерного окружения (make container-check)
   lock.py       создание requirements.lock (make lock)
+.github/
+  workflows/ci.yml  pipeline CI (GitHub Actions)
+  actions/setup/    общая подготовка заданий: Python, зависимости, кэш
+  CODEOWNERS        владельцы критических файлов приёмки
 scripts/
   setup.sh      сценарий первоначальной настройки (make setup)
 .githooks/      git-хук pre-push
 docs/           описание API, схема данных, тестирование
 deploy/         развертывание на серверах Linux
   docker/       контейнеры: nginx.conf, роли БД, файлы паролей, скрипты
+  ci/           CI: локальный реестр, self-hosted runner, настройки GitHub
 Dockerfile, .dockerignore, compose.yaml, requirements.lock   образ и окружение
 ```
 

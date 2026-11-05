@@ -1,0 +1,43 @@
+# Локальный реестр образов (локальный «Docker Hub», ЛР5) на wa-app01.
+# Запуск и учётная запись публикации: sudo bash deploy/ci/setup_registry.sh
+#
+# Слушает только 127.0.0.1:5000: публикует задание publish CI на self-hosted runner этой
+# же ВМ, Docker считает localhost доверенным адресом, и TLS не нужен. Снаружи ВМ реестр
+# недоступен. Вход по паролю (htpasswd, bcrypt); пароль хранится в секретах GitHub.
+
+name: warehouse-registry
+
+services:
+  registry:
+    image: registry:3.1.2@sha256:d4032d4cc323c1731c707931ecada07a53076eac38e3b61ae57533f170f2c6c3
+    user: "5000:5000"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:5000"
+    environment:
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: warehouse-registry
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
+      # удаление образов по дайджесту (очистка старых тегов: docs/CI.md)
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - /srv/registry/data:/var/lib/registry
+      - /srv/registry/auth:/auth:ro
+    tmpfs:
+      - /tmp:size=16m
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+          pids: 64
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
