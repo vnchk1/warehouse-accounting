@@ -31,6 +31,10 @@ dev = [
     "httpx2==2.13.0",
     "ruff==0.16.8",
     "bandit==1.9.4",
+    # ЛР5: проверка зависимостей на известные уязвимости (make deps-audit)
+    "pip-audit==2.10.0",
+    # ЛР5: разбор .github/workflows/ci.yml в tools/ci_guard.py (make guard)
+    "pyyaml==6.0.3",
 ]
 
 [tool.setuptools.packages.find]

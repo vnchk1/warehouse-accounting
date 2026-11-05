@@ -57,7 +57,8 @@ OWNER_VARIABLE = "ALEMBIC_DATABASE_URL"
 
 IMAGE_NAME = r"^[a-z0-9][a-z0-9./_-]*"
 PINNED_IMAGE = re.compile(IMAGE_NAME + r":(?P<tag>[A-Za-z0-9._-]+)@sha256:[0-9a-f]{64}$")
-BUILT_IMAGE = re.compile(IMAGE_NAME + r":[0-9]+\.[0-9]+\.[0-9]+$")
+#: Свой образ: версия (0.1.0) или версия и начало хеша коммита (0.1.0-1a2b3c4d5e6f, ЛР5)
+BUILT_IMAGE = re.compile(IMAGE_NAME + r":[0-9]+\.[0-9]+\.[0-9]+(-[0-9a-f]{7,40})?$")
 VERSION_TAG = re.compile(r"[0-9]+\.[0-9]+")
 SECRET_NAME = re.compile(r"PASSWORD|SECRET|TOKEN|PRIVATE|API_KEY|DATABASE_URL", re.IGNORECASE)
 #: Похожи на секреты по имени, но это обычные настройки
@@ -264,7 +265,7 @@ def check_service(name: str, svc: dict[str, Any], networks: dict[str, Any]) -> N
     image = svc.get("image", "")
     if "build" in svc:
         if not BUILT_IMAGE.match(image):
-            problem(where, f"образ «{image}» — нужен тег с точной версией вида 0.1.0, не latest")
+            problem(where, f"образ «{image}» — нужен тег вида 0.1.0 или 0.1.0-<коммит>, не latest")
     else:
         check_image_reference(where, image)
         if not svc.get("user"):
