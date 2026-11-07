@@ -291,9 +291,12 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           mkdir -p image
-          docker image inspect --format '{{.Id}}' "warehouse-app:$TAG" > image/image-id.txt
+          # Отпечаток образа, не зависящий от хранилища Docker (ID у containerd и у классического
+          # хранилища разный): контрольная сумма файла образа и список слоёв (diff_id).
+          docker image inspect --format '{{json .RootFS.Layers}}' "warehouse-app:$TAG" > image/image-layers.json
           docker save "warehouse-app:$TAG" | gzip -1 > image/image.tar.gz
-          echo "Образ warehouse-app:$TAG, $(cat image/image-id.txt), $(du -h image/image.tar.gz | cut -f1)"
+          (cd image && sha256sum image.tar.gz > image.tar.gz.sha256)
+          echo "Образ warehouse-app:$TAG, файл $(cut -c1-19 image/image.tar.gz.sha256)…, $(du -h image/image.tar.gz | cut -f1)"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: image
@@ -325,9 +328,10 @@ jobs:
           path: ${{ runner.temp }}/image
       - name: Загрузка проверенного образа
         run: |
+          (cd "$RUNNER_TEMP/image" && sha256sum --check --quiet image.tar.gz.sha256)
           gunzip -c "$RUNNER_TEMP/image/image.tar.gz" | docker load
-          test "$(docker image inspect --format '{{.Id}}' "warehouse-app:$APP_IMAGE_TAG")" \
-            = "$(cat "$RUNNER_TEMP/image/image-id.txt")"
+          test "$(docker image inspect --format '{{json .RootFS.Layers}}' "warehouse-app:$APP_IMAGE_TAG")" \
+            = "$(cat "$RUNNER_TEMP/image/image-layers.json")"
       - name: Дата для кэша базы уязвимостей
         id: today
         run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
@@ -372,11 +376,16 @@ jobs:
           path: ${{ runner.temp }}/image
       - name: Загрузка образа и сверка с проверенным
         run: |
+          # тот же файл, что проверен в «Анализ образа», и те же слои после загрузки
+          if ! (cd "$RUNNER_TEMP/image" && sha256sum --check --quiet image.tar.gz.sha256); then
+            echo "::error::файл образа не совпадает с проверенным"
+            exit 1
+          fi
           gunzip -c "$RUNNER_TEMP/image/image.tar.gz" | docker load
-          expected=$(cat "$RUNNER_TEMP/image/image-id.txt")
-          actual=$(docker image inspect --format '{{.Id}}' "warehouse-app:$APP_IMAGE_TAG")
+          expected=$(cat "$RUNNER_TEMP/image/image-layers.json")
+          actual=$(docker image inspect --format '{{json .RootFS.Layers}}' "warehouse-app:$APP_IMAGE_TAG")
           if [[ $actual != "$expected" ]]; then
-            echo "::error::образ $actual не совпадает с проверенным $expected"
+            echo "::error::слои загруженного образа не совпадают с проверенным"
             exit 1
           fi
       - name: Публикация в реестр
