@@ -76,7 +76,12 @@ up() {
     if [[ -n ${CI_IMAGE_TAR:-} ]]; then
         (cd "$(dirname "$CI_IMAGE_TAR")" &&
             sha256sum --check --quiet "$(basename "$CI_IMAGE_TAR").sha256")
-        image=$(gunzip -c "$CI_IMAGE_TAR" | docker load -q | sed -n 's/^Loaded image: //p')
+        image=$(gunzip -c "$CI_IMAGE_TAR" | docker load | sed -n 's/^Loaded image: //p')
+        if [[ -z $image ]]; then
+            image="warehouse-ci:$(make -s image-tag)"
+        fi
+        docker image inspect "$image" >/dev/null 2>&1 ||
+            fail "образ $image не загрузился из $CI_IMAGE_TAR"
     else
         echo "CI_IMAGE_TAR не задан — собираю образ проверок из Dockerfile.checks"
         docker build --quiet -f Dockerfile.checks -t warehouse-ci:local . >/dev/null
