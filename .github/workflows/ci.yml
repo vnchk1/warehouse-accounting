@@ -1,16 +1,21 @@
 # CI «Складской учёт» (ЛР5): независимый обязательный барьер перед сборкой и публикацией
 # образа. Подробности — docs/CI.md.
 #
-#   guard ─┐
-#   style ─┤
-#   tests ─┤
-#   migrations ─┤
-#   backup ─┼──────────────────────────────► publish (только master: реестр на wa-app01)
-#   security ─┤
-#   container ──► build ──► image-scan ─┘
+#   ci-image ─┬─► guard ─┐
+#             ├─► style ─┤
+#             ├─► tests ─┤
+#             ├─► migrations ─┤
+#             ├─► backup ─┼──────────────────────────────► publish (только master: реестр на wa-app01)
+#             ├─► security ─┤
+#             └─► container ──► build ──► image-scan ─┘
 #
-# Каждое задание выполняет те же команды make, что make verify и make container-check у
-# разработчика, с теми же версиями. Совпадение проверяет make guard (tools/ci_guard.py).
+# Все проверки выполняются в DinD: раннер поднимает контейнер docker:dind
+# (изолированный демон Docker, образ закреплён в env DIND_IMAGE), а каждая команда
+# make запускается в контейнере проверок внутри этого демона (tools/ci_dind.sh);
+# PostgreSQL — контейнер в той же сети DinD, его образ берётся из compose.yaml.
+# Каждое задание выполняет те же команды make, что make verify и make container-check
+# у разработчика, с теми же версиями (образ проверок — Dockerfile.checks, собирается
+# заданием ci-image один раз на прогон). Совпадение проверяет make guard.
 # Образ публикуется, только если успешны ВСЕ задания проверки (needs без always()).
 # Критический файл приёмки: изменения одобряют владельцы из .github/CODEOWNERS.
 
@@ -39,37 +44,66 @@ concurrency:
 env:
   # основная ветка: с ней make guard и make secrets сравнивают изменения
   BASE_REF: origin/master
-  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # Изолированный демон Docker для всех проверок (DinD); закреплён версией и
+  # дайджестом — это проверяет make guard
+  DIND_IMAGE: docker:29.1.3-dind@sha256:173f284a4299164772a90f52b373e73e087583c0963f1334c9995f190ef6f3f5
 
 jobs:
+  # -------------------------------------------------------------------------
+  # Образ проверок (Dockerfile.checks): Python, пакеты из pyproject.toml,
+  # gitleaks/trivy/actionlint из tools/tools.lock, клиент PostgreSQL 16.
+  # Собирается один раз на прогон; задания проверок загружают его в свой DinD.
+  # -------------------------------------------------------------------------
+  ci-image:
+    name: Образ проверок
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Сборка образа проверок
+        run: |
+          tag=$(make -s image-tag)
+          docker build -f Dockerfile.checks -t "warehouse-ci:$tag" .
+          mkdir -p ci-image
+          docker save "warehouse-ci:$tag" | gzip -1 > ci-image/ci-image.tar.gz
+          (cd ci-image && sha256sum ci-image.tar.gz > ci-image/ci-image.tar.gz.sha256)
+          echo "Образ проверок warehouse-ci:$tag, файл $(cut -c1-19 ci-image/ci-image.tar.gz.sha256)…, $(du -h ci-image/ci-image.tar.gz | cut -f1)"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-image
+          path: ci-image/
+          retention-days: 7
+          compression-level: 0
+
   # -------------------------------------------------------------------------
   # Охрана приёмки: pipeline, CODEOWNERS, удаление тестов и ослабление правил
   # -------------------------------------------------------------------------
   guard:
     name: Охрана приёмки
+    needs: ci-image
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          tools: "true"
+          name: ci-image
+          path: ${{ runner.temp }}/ci-image
+      - name: DinD и контейнер проверок
+        env:
+          CI_IMAGE_TAR: ${{ runner.temp }}/ci-image/ci-image.tar.gz
+        run: bash tools/ci_dind.sh up
       - name: Программа охраны — из основной ветки
         # Изменение tools/ci_guard.py в запросе на слияние не может ослабить проверку
         # этого же запроса: действует версия, уже прошедшая проверку и слияние.
-        run: |
-          if git cat-file -e "$BASE_REF:tools/ci_guard.py" 2>/dev/null; then
-            git show "$BASE_REF:tools/ci_guard.py" > "$RUNNER_TEMP/ci_guard.py"
-            echo "GUARD=$RUNNER_TEMP/ci_guard.py" >> "$GITHUB_ENV"
-            echo "Используется tools/ci_guard.py из $BASE_REF"
-          else
-            echo "В $BASE_REF ещё нет tools/ci_guard.py — используется версия из этой ветки"
-          fi
+        run: bash tools/ci_dind.sh guard-from-base
       - name: make guard
-        run: make guard
+        run: bash tools/ci_dind.sh exec make guard
       - name: Отчёт
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -83,52 +117,54 @@ jobs:
   # -------------------------------------------------------------------------
   style:
     name: Стиль и правила проекта
+    needs: ci-image
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-image
+          path: ${{ runner.temp }}/ci-image
+      - name: DinD и контейнер проверок
+        env:
+          CI_IMAGE_TAR: ${{ runner.temp }}/ci-image/ci-image.tar.gz
+        run: bash tools/ci_dind.sh up
       - name: make policy
-        run: make policy
+        run: bash tools/ci_dind.sh exec make policy
       - name: make format-check
-        run: make format-check
+        run: bash tools/ci_dind.sh exec make format-check
       - name: make lint-check
-        run: make lint-check
+        run: bash tools/ci_dind.sh exec make lint-check
 
   # -------------------------------------------------------------------------
-  # Тесты: отдельная тестовая база в контейнере, тот же PostgreSQL, что в compose.yaml
+  # Тесты: отдельная тестовая база — контейнер в той же сети DinD, тот же
+  # образ PostgreSQL, что в compose.yaml
   # -------------------------------------------------------------------------
   tests:
     name: Тесты
+    needs: ci-image
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    services:
-      postgres:
-        image: postgres:16.15-trixie@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
-        env:
-          POSTGRES_USER: warehouse
-          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
-          POSTGRES_DB: warehouse_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U warehouse -d warehouse_test"
-          --health-interval 5s --health-timeout 5s --health-retries 20
-    env:
-      TEST_DATABASE_URL: postgresql+psycopg://warehouse:${{ secrets.CI_DB_PASSWORD }}@localhost:5432/warehouse_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          postgres-client: "true"
+          name: ci-image
+          path: ${{ runner.temp }}/ci-image
+      - name: DinD, контейнер проверок и PostgreSQL
+        env:
+          CI_IMAGE_TAR: ${{ runner.temp }}/ci-image/ci-image.tar.gz
+          CI_DB_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
+        run: bash tools/ci_dind.sh up --db
       - name: make test
-        run: make test
+        run: bash tools/ci_dind.sh exec make test
       - name: make mutation
-        run: make mutation
+        run: bash tools/ci_dind.sh exec make mutation
       - name: Отчёты тестов, покрытия и мутационной проверки
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -142,29 +178,24 @@ jobs:
   # -------------------------------------------------------------------------
   migrations:
     name: Миграции
+    needs: ci-image
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:16.15-trixie@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
-        env:
-          POSTGRES_USER: warehouse
-          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
-          POSTGRES_DB: warehouse_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U warehouse -d warehouse_test"
-          --health-interval 5s --health-timeout 5s --health-retries 20
-    env:
-      TEST_DATABASE_URL: postgresql+psycopg://warehouse:${{ secrets.CI_DB_PASSWORD }}@localhost:5432/warehouse_test
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-image
+          path: ${{ runner.temp }}/ci-image
+      - name: DinD, контейнер проверок и PostgreSQL
+        env:
+          CI_IMAGE_TAR: ${{ runner.temp }}/ci-image/ci-image.tar.gz
+          CI_DB_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
+        run: bash tools/ci_dind.sh up --db
       - name: make migrations-check
-        run: make migrations-check
+        run: bash tools/ci_dind.sh exec make migrations-check
       - name: Отчёт
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -178,31 +209,24 @@ jobs:
   # -------------------------------------------------------------------------
   backup:
     name: Резервное копирование
+    needs: ci-image
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:16.15-trixie@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
-        env:
-          POSTGRES_USER: warehouse
-          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
-          POSTGRES_DB: warehouse_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U warehouse -d warehouse_test"
-          --health-interval 5s --health-timeout 5s --health-retries 20
-    env:
-      TEST_DATABASE_URL: postgresql+psycopg://warehouse:${{ secrets.CI_DB_PASSWORD }}@localhost:5432/warehouse_test
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          postgres-client: "true"
+          name: ci-image
+          path: ${{ runner.temp }}/ci-image
+      - name: DinD, контейнер проверок и PostgreSQL
+        env:
+          CI_IMAGE_TAR: ${{ runner.temp }}/ci-image/ci-image.tar.gz
+          CI_DB_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
+        run: bash tools/ci_dind.sh up --db
       - name: make backup-check
-        run: make backup-check
+        run: bash tools/ci_dind.sh exec make backup-check
       - name: Отчёт
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -216,22 +240,28 @@ jobs:
   # -------------------------------------------------------------------------
   security:
     name: Безопасность
+    needs: ci-image
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # make secrets проверяет и коммиты ветки, а не только файлы
           persist-credentials: false
-      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          tools: "true"
+          name: ci-image
+          path: ${{ runner.temp }}/ci-image
+      - name: DinD и контейнер проверок
+        env:
+          CI_IMAGE_TAR: ${{ runner.temp }}/ci-image/ci-image.tar.gz
+        run: bash tools/ci_dind.sh up
       - name: make sast
-        run: make sast
+        run: bash tools/ci_dind.sh exec make sast
       - name: make secrets
-        run: make secrets
+        run: bash tools/ci_dind.sh exec make secrets
       - name: make deps-audit
-        run: make deps-audit
+        run: bash tools/ci_dind.sh exec make deps-audit
       - name: Отчёты анализаторов
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -245,35 +275,53 @@ jobs:
   # -------------------------------------------------------------------------
   container:
     name: Контейнерная проверка
+    needs: ci-image
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-image
+          path: ${{ runner.temp }}/ci-image
+      - name: DinD и контейнер проверок
+        env:
+          CI_IMAGE_TAR: ${{ runner.temp }}/ci-image/ci-image.tar.gz
+        run: bash tools/ci_dind.sh up
       - name: Пароли контейнеров (одноразовые, make container-env)
-        run: make container-env
+        run: bash tools/ci_dind.sh exec make container-env
       - name: make container-policy
-        run: make container-policy
+        run: bash tools/ci_dind.sh exec make container-policy
 
   # -------------------------------------------------------------------------
-  # Сборка образа с тегом коммита и проверка собранного образа
+  # Сборка образа с тегом коммита и проверка собранного образа; сборка
+  # выполняется демоном DinD (контейнер проверок работает с ним по сети)
   # -------------------------------------------------------------------------
   build:
     name: Сборка образа
-    needs: container
+    needs: [ci-image, container]
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-image
+          path: ${{ runner.temp }}/ci-image
+      - name: DinD и контейнер проверок
+        env:
+          CI_IMAGE_TAR: ${{ runner.temp }}/ci-image/ci-image.tar.gz
+        run: bash tools/ci_dind.sh up --docker
       - name: Тег образа связан с коммитом
         id: tag
         run: |
-          tag=$(make -s image-tag)
+          tag=$(bash tools/ci_dind.sh exec make -s image-tag)
           if [[ $tag != *-"${GITHUB_SHA::12}" ]]; then
             echo "::error::тег $tag не содержит коммит ${GITHUB_SHA::12}"
             exit 1
@@ -281,11 +329,11 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Тег образа: warehouse-app:$tag (коммит $GITHUB_SHA)"
       - name: Пароли контейнеров (одноразовые, make container-env)
-        run: make container-env
+        run: bash tools/ci_dind.sh exec make container-env
       - name: make container-build
-        run: make container-build
+        run: bash tools/ci_dind.sh exec make container-build
       - name: make container-image-check
-        run: make container-image-check
+        run: bash tools/ci_dind.sh exec make container-image-check
       - name: Образ для следующих заданий
         env:
           TAG: ${{ steps.tag.outputs.tag }}
@@ -309,24 +357,28 @@ jobs:
   # -------------------------------------------------------------------------
   image-scan:
     name: Анализ образа
-    needs: build
+    needs: [ci-image, build]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       APP_IMAGE_TAG: ${{ needs.build.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          python: "false"
-          tools: "true"
+          name: ci-image
+          path: ${{ runner.temp }}/ci-image
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: image
           path: ${{ runner.temp }}/image
-      - name: Загрузка проверенного образа
+      - name: DinD и контейнер проверок
+        env:
+          CI_IMAGE_TAR: ${{ runner.temp }}/ci-image/ci-image.tar.gz
+        run: bash tools/ci_dind.sh up --docker
+      - name: Загрузка проверенного образа в DinD
         run: |
           (cd "$RUNNER_TEMP/image" && sha256sum --check --quiet image.tar.gz.sha256)
           gunzip -c "$RUNNER_TEMP/image/image.tar.gz" | docker load
@@ -338,11 +390,14 @@ jobs:
       - name: Кэш базы уязвимостей trivy (обновляется раз в сутки)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/trivy
+          path: .trivy-cache
           key: trivy-db-${{ steps.today.outputs.date }}
           restore-keys: trivy-db-
       - name: make image-scan
-        run: make image-scan
+        run: |
+          bash tools/ci_dind.sh cache-load trivy
+          bash tools/ci_dind.sh exec make image-scan
+          bash tools/ci_dind.sh cache-save trivy
       - name: Отчёт
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

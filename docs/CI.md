@@ -3,20 +3,57 @@
 CI — независимый обязательный барьер перед созданием и публикацией образа
 приложения. Система — **GitHub Actions**: репозиторий уже на GitHub, а защита
 ветки, обязательные проверки, `CODEOWNERS`, секреты и окружения в нём
-встроенные. Проверки выполняются на серверах GitHub (чистая машина на каждый
-запуск, не зависит от компьютера разработчика), публикация — на self-hosted
-runner стенда `wa-app01` в локальный реестр образов (локальный «Docker Hub»).
+встроенные. Проверки выполняются на серверах GitHub **внутри DinD** —
+изолированного демона Docker, который поднимается контейнером на время
+задания, — публикация (она не является проверкой) — на self-hosted runner
+стенда `wa-app01` в локальный реестр образов (локальный «Docker Hub»).
 
 ```
- разработчик (WSL)            GitHub Actions (ubuntu-24.04)                 wa-app01
- ─────────────────            ───────────────────────────────               ─────────────────────────
- make verify (хук pre-push)   guard ─┐                                      runner ghrunner
- git push ──────────────────► style ─┤                                      (метка warehouse-registry)
- запрос на слияние ─────────► tests ─┤  (своя тестовая база PostgreSQL)          │
-                              migrations ─┤ (временная база)                     ▼
-                              backup ─┼──────────────────────► publish ──► 127.0.0.1:5000
-                              security ─┤                        (только master) реестр registry:3
-                              container ─► build ─► image-scan ─┘                warehouse-app:<версия>-<коммит>
+ разработчик (WSL)            GitHub Actions (ubuntu-24.04)                    wa-app01
+ ─────────────────            ──────────────────────────────                  ─────────────────────────
+ make verify (хук pre-push)   ci-image (сборка Dockerfile.checks)             runner ghrunner
+ git push ──────────────────►      │                                           (метка warehouse-registry)
+ запрос на слияние ─────────►      ▼                                               │
+                              guard, style, tests, migrations,                    ▼
+                              backup, security, container:       publish ──► 127.0.0.1:5000
+                              контейнеры в DinD (docker:dind) ─► (только master) реестр registry:3
+                              PostgreSQL — контейнер там же,          warehouse-app:<версия>-<коммит>
+                              образ — из compose.yaml
+```
+
+## Проверки выполняются в DinD
+
+Раннер не устанавливает ничего, кроме уже имеющегося Docker, и не запускает
+проверки у себя: каждое задание проверки поднимает контейнер
+`docker:*-dind` (образ закреплён версией и дайджестом в `env DIND_IMAGE`,
+это проверяет `make guard`) — отдельный изолированный демон Docker с API
+только на `127.0.0.1` раннера. Все команды `make` выполняются в контейнере
+`ci-work` внутри этого демона (`tools/ci_dind.sh exec make …`).
+
+- **Образ проверок** — `Dockerfile.checks`: тот же Python, что у приложения
+  (та же версия и дайджест), пакеты из `pyproject.toml` (`==`),
+  gitleaks/trivy/actionlint из `tools/tools.lock` (SHA-256), клиент
+  PostgreSQL 16 из того же образа `postgres`, что `db` в `compose.yaml`.
+  Собирается один раз на прогон заданием `ci-image` и передаётся остальным
+  заданиям артефактом (с контрольной суммой, как образ приложения).
+- **Код коммита** копируется в контейнер в `/src` — тот же путь, на который
+  ссылается editable-установка пакета в образе, поэтому проверяется именно
+  код проверяемого коммита.
+- **PostgreSQL** для заданий `tests`, `migrations`, `backup` — контейнер в той
+  же сети DinD; его образ `tools/ci_dind.sh` читает из `compose.yaml`, поэтому
+  версия PostgreSQL в CI совпадает с боевой по построению.
+- **Сборка и анализ образа приложения** (`build`, `image-scan`) тоже работают
+  через демон DinD: контейнер проверок обращается к нему по сети
+  (`DOCKER_HOST`), артефакт `image` выгружается из DinD после сверки слоёв.
+- **Отчёты** (`reports/`) выгружаются из контейнера на раннер при любом исходе
+  проверки и сохраняются артефактами прогона.
+
+Локально тот же прогон воспроизводится скриптом (нужен Docker):
+
+```bash
+DIND_IMAGE=$(grep -oP 'DIND_IMAGE: \K\S+' .github/workflows/ci.yml) \
+    bash tools/ci_dind.sh up --db     # без CI_IMAGE_TAR образ соберётся сам
+bash tools/ci_dind.sh exec make test
 ```
 
 ## Когда запускается (п. 3)
@@ -33,10 +70,12 @@ runner стенда `wa-app01` в локальный реестр образов
 Каждое задание выполняет **те же команды make**, что разработчик у себя
 (`make verify`, `make container-check`), с теми же версиями: Python-пакеты —
 из `pyproject.toml` (`==`), gitleaks/trivy/actionlint — из `tools/tools.lock`
-(SHA-256), PostgreSQL — тот же образ, что в `compose.yaml`.
+(SHA-256), PostgreSQL — тот же образ, что в `compose.yaml`. Выполнение — в
+контейнерах DinD (см. выше).
 
 | Этап задания (п. 5) | Задание CI | Команды | Отчёты (артефакт прогона) |
 |---|---|---|---|
+| образ проверок | `ci-image` — Образ проверок | `docker build -f Dockerfile.checks` | артефакт `ci-image` |
 | охрана приёмки | `guard` — Охрана приёмки | `make guard` | `reports-guard`: `guard.md` |
 | проверки стиля | `style` — Стиль и правила проекта | `make policy`, `make format-check`, `make lint-check` | журнал задания |
 | тесты | `tests` — Тесты | `make test`, `make mutation` | `reports-tests`: `junit.xml`, `coverage.xml`, `htmlcov/`, `mutation.txt` |
@@ -64,8 +103,8 @@ runner стенда `wa-app01` в локальный реестр образов
 
 ## Отдельная тестовая база (п. 6)
 
-Задания `tests`, `migrations`, `backup` получают свой контейнер
-`postgres:16.15-trixie@sha256:…` (тот же, что `db` в `compose.yaml`) с базой
+Задания `tests`, `migrations`, `backup` получают свой контейнер PostgreSQL
+внутри DinD (образ — тот же, что `db` в `compose.yaml`) с базой
 `warehouse_test`; пароль — секрет `CI_DB_PASSWORD`. Тесты работают только с
 базой `*_test` (`tests/conftest.py`), проверки миграций и копий — с временными
 базами `warehouse_migrations_check_test`, `warehouse_backup_check_test`,
@@ -74,9 +113,12 @@ runner стенда `wa-app01` в локальный реестр образов
 
 ## Кэширование (п. 8)
 
-- загрузки pip — `actions/setup-python` с `cache: pip`, ключ — хеш `pyproject.toml`;
-- gitleaks, trivy, actionlint — `actions/cache`, ключ — хеш `tools/tools.lock`;
-- база уязвимостей trivy — `actions/cache`, ключ — дата (обновляется раз в сутки).
+- инструменты и зависимости проверок входят в образ `Dockerfile.checks`, который
+  собирается один раз на прогон (задание `ci-image`) и переиспользуется всеми
+  заданиями — вместо отдельных кэшей pip и `.tools` в каждом задании;
+- база уязвимостей trivy — `actions/cache`, ключ — дата (обновляется раз в
+  сутки); `tools/ci_dind.sh cache-load/cache-save trivy` переносит её между
+  раннером и контейнером проверок.
 
 ## Тег образа (п. 9)
 
@@ -92,7 +134,7 @@ runner стенда `wa-app01` в локальный реестр образов
   содержит `always()`/`failure()`, поэтому GitHub добавляет к нему `success()`:
   упало или пропущено любое задание — `publish` получает статус *skipped*;
 - публикуется ровно тот файл образа, который собрал `build` и проверили
-  `build` и `image-scan` (сверка ID образа после `docker load`);
+  `build` и `image-scan` (сверка файла образа и слоёв после `docker load`);
 - секреты реестра — в окружении `registry`, доступном только ветке `master`;
 - реестр слушает только `127.0.0.1` на `wa-app01`: опубликовать в обход CI
   можно только с самой ВМ и только с паролем;
@@ -102,7 +144,7 @@ runner стенда `wa-app01` в локальный реестр образов
 
 | Секрет | Где | Для чего |
 |---|---|---|
-| `CI_DB_PASSWORD` | Settings → Secrets and variables → Actions → Repository secrets | пароль одноразовой тестовой базы в CI |
+| `CI_DB_PASSWORD` | Settings → Secrets and variables → Actions → Repository secrets | пароль одноразовой тестовой базы в CI (контейнер PostgreSQL в DinD) |
 | `REGISTRY_USER`, `REGISTRY_PASSWORD` | Settings → Environments → `registry` → Environment secrets | вход в реестр; доступны только заданию `publish` в `master` |
 
 В файлах репозитория, журналах и образе паролей нет: GitHub маскирует
@@ -121,7 +163,8 @@ runner стенда `wa-app01` в локальный реестр образов
 Плюс `make container-image-check` (ЛР4): в образе нет значений паролей,
 файлов `.env`, процесса от root.
 
-Сторонние actions закреплены полным хешем коммита, а trivy ставится
+Сторонние actions закреплены полным хешем коммита, образы DinD и базовые
+образы `Dockerfile.checks` — версией и дайджестом sha256, а trivy ставится
 бинарным файлом с проверкой SHA-256, без `trivy-action`: в марте 2026 года
 теги `aquasecurity/trivy-action` и выпуск trivy 0.69.4 были подменены
 злоумышленником (CVE-2026-33634) — плавающие теги и непроверенные загрузки в
@@ -131,8 +174,9 @@ CI недопустимы.
 
 Критические файлы приёмки — тесты, `Makefile`, `pyproject.toml`,
 `tools/`, `.github/` (pipeline, `CODEOWNERS`), `.githooks/`, `migrations/`,
-`.gitleaks.toml`, `.trivyignore`, `Dockerfile`, `.dockerignore`,
-`compose.yaml`, `requirements.lock`, `CONTRIBUTING.md`. Три уровня защиты:
+`.gitleaks.toml`, `.trivyignore`, `Dockerfile`, `Dockerfile.checks`,
+`.dockerignore`, `compose.yaml`, `requirements.lock`, `CONTRIBUTING.md`.
+Три уровня защиты:
 
 1. **`.github/CODEOWNERS` + защита ветки `master`** (`deploy/ci/github_setup.sh protect`):
    слияние только через запрос; все задания CI, кроме `publish`, —
@@ -149,7 +193,10 @@ CI недопустимы.
      в `.trivyignore`, общие исключения gitleaks;
    - из pipeline убрано задание или шаг, добавлены `continue-on-error`,
      `|| true`, `always()`, публикация не ждёт какой-то проверки, action не
-     закреплён хешем, PostgreSQL в CI отличается от `compose.yaml`;
+     закреплён хешем;
+   - проверка выполняется в обход DinD (не через `tools/ci_dind.sh`), у задания
+     проверки появились `services:`, образ DinD или базовый образ
+     `Dockerfile.checks` не закреплён версией и дайджестом;
    - у критического файла нет владельца в `CODEOWNERS`; в репозитории `.env`,
      копия базы или закрытый ключ.
 
@@ -164,8 +211,8 @@ CI недопустимы.
    заблокировано.
 
 Каждый сценарий обхода из п. 15 проверяется автоматически:
-`tests/tools/test_ci_guard.py` (30 случаев) создаёт временный репозиторий,
-вносит «вредное» изменение и проверяет, что `make guard` его находит.
+`tests/tools/test_ci_guard.py` создаёт временный репозиторий, вносит
+«вредное» изменение и проверяет, что `make guard` его находит.
 
 ## Настройка (один раз)
 
@@ -202,11 +249,16 @@ Runner работает от пользователя `ghrunner` в группе
 - в публичном репозитории запуск workflow из чужих форков — только после
   одобрения (Settings → Actions → General).
 
+Проверки на серверах GitHub от runner изолированы ещё и средой: они выполняются
+в контейнерах внутри DinD-демона, который живёт только во время задания.
+
 ## Обслуживание
 
 - опубликованные образы: `sudo bash deploy/ci/registry_tags.sh [коммит]`;
 - обновить инструмент: новая строка в `tools/tools.lock` (версия, SHA-256 из
   `*_checksums.txt` релиза) — отдельная задача и запрос на слияние;
+- обновить образ DinD или базовый образ `Dockerfile.checks`: новая версия и
+  дайджест (дайджест — на странице образа в Docker Hub) — тоже отдельная задача;
 - уязвимость в образе: обновить базовый образ (дайджест — github.com/docker-library/repo-info)
   или пакет в `pyproject.toml` + `make lock`; если исправления нет — строка в
   `.trivyignore` с причиной и сроком, метка `acceptance-change`.

@@ -1,0 +1,50 @@
+# Образ проверок CI (ЛР5): каждая проверка pipeline выполняется в контейнере из
+# этого образа внутри DinD — изолированного демона Docker (docs/CI.md, tools/ci_dind.sh).
+#
+# Те же версии, что у разработчика: Python — как в Dockerfile приложения (тот же
+# дайджест), пакеты — pyproject.toml (==), gitleaks/trivy/actionlint — tools/tools.lock
+# (проверка SHA-256), клиент PostgreSQL 16 — из того же образа postgres, что сервис
+# db в compose.yaml. Сборка — задание ci-image в .github/workflows/ci.yml.
+
+# Клиент PostgreSQL 16 (pg_dump, pg_restore, psql) — тот же образ, что база;
+# версия клиента совпадает с сервером по построению
+FROM postgres:16.15-trixie@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d AS pg
+
+# Docker CLI и compose: задания build и image-scan работают с демоном DinD
+FROM docker:29.1.3-cli@sha256:4fa0ee1f3a7e4354c4ea34558b6d4ee32859baf4973d4c8ccc8e7fe3dd730c04 AS docker
+
+FROM python:3.12.16-slim-trixie@sha256:e695ab189fa2d082b1c61c69a6b888a5adeca61ceeccad107b1ed2a125721a9e
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    VENV=/opt/venv \
+    TOOLS_DIR=/opt/tools
+
+# git — make guard и make secrets; openssl — make container-env; curl — установка
+# инструментов; libpq5 и libreadline8 — библиотеки для pg_dump/pg_restore/psql
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        git make openssl curl ca-certificates libpq5 libreadline8 \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=pg /usr/lib/postgresql/16/bin/pg_dump /usr/local/bin/pg_dump
+COPY --from=pg /usr/lib/postgresql/16/bin/pg_restore /usr/local/bin/pg_restore
+COPY --from=pg /usr/lib/postgresql/16/bin/psql /usr/local/bin/psql
+COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/
+
+# Окружение проверок: зависимости проекта и инструменты анализа из pyproject.toml.
+# На время проверки код коммита копируется в тот же каталог /src (editable-установка
+# ссылается на него), поэтому проверяется именно код проверяемого коммита.
+WORKDIR /src
+COPY pyproject.toml ./
+COPY app ./app
+RUN python -m venv /opt/venv \
+ && /opt/venv/bin/pip install --quiet -e ".[dev]" \
+ && /opt/venv/bin/pip check
+
+# gitleaks, trivy, actionlint точных версий с проверкой SHA-256 (tools/tools.lock)
+COPY tools/tools.lock tools/install_tools.sh tools/
+RUN TOOLS_DIR=/opt/tools bash tools/install_tools.sh \
+ && rm -rf /opt/tools/cache tools

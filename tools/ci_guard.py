@@ -5,19 +5,23 @@
      все обязательные задания на месте; публикация зависит от всех проверок и не имеет
      условий, которые позволили бы ей выполниться после ошибки; нет continue-on-error,
      «|| true», «set +e», --no-verify; always() — только у шагов сохранения отчётов;
-     сторонние actions закреплены полным хешем коммита; PostgreSQL в CI — тот же образ,
-     что в compose.yaml.
-  2. Локальные и серверные проверки совпадают: каждый шаг make verify и make
+     сторонние actions закреплены полным хешем коммита.
+  2. Все проверки выполняются в DinD (tools/ci_dind.sh): у заданий проверки нет
+     services; каждый вызов make-проверки в pipeline идёт через tools/ci_dind.sh exec;
+     образ DinD (env DIND_IMAGE) и базовые образы Dockerfile.checks закреплены
+     версией и дайджестом sha256. Образ PostgreSQL для проверок скрипт берёт из
+     compose.yaml, поэтому версии совпадают по построению.
+  3. Локальные и серверные проверки совпадают: каждый шаг make verify и make
      container-check выполняется в CI, а CI не запускает проверок, которых нет локально.
-  3. .github/CODEOWNERS назначает владельцев всем критическим файлам приёмки.
-  4. В репозитории нет файлов, которым там не место: .env, копии базы, закрытые ключи.
+  4. .github/CODEOWNERS назначает владельцев всем критическим файлам приёмки.
+  5. В репозитории нет файлов, которым там не место: .env, копии базы, закрытые ключи.
 
 Сравнение с основной веткой (BASE_REF, точнее — с точкой ответвления от неё):
-  5. Не удалены файлы тестов и тестовые функции, не стало меньше проверок (assert,
+  6. Не удалены файлы тестов и тестовые функции, не стало меньше проверок (assert,
      pytest.raises) — так нельзя «выключить» тест, оставив его имя.
-  6. Не ослаблены правила: нижние границы и списки tools/policy.py, пороги и исключения
+  7. Не ослаблены правила: нижние границы и списки tools/policy.py, пороги и исключения
      в pyproject.toml, правила .gitleaks.toml, исключения .trivyignore.
-  7. Перечень изменённых критических файлов — в отчёт: их обязаны одобрить владельцы
+  8. Перечень изменённых критических файлов — в отчёт: их обязаны одобрить владельцы
      (CODEOWNERS + правило защиты ветки «Require review from Code Owners»).
 
 Ослабление может быть оправдано (например, тест заменён более точным). Тогда команда
@@ -81,6 +85,7 @@ CRITICAL = (
     "/Makefile",
     "/pyproject.toml",
     "/Dockerfile",
+    "/Dockerfile.checks",
     "/.dockerignore",
     "/compose.yaml",
     "/requirements.lock",
@@ -100,6 +105,14 @@ FORBIDDEN_RUN = {
 STATUS_FUNCTION = re.compile(r"\b(always|failure|cancelled|success)\s*\(")
 PINNED_ACTION = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$")
 MAKE_CALL = re.compile(r"(?:^|[\s;&|(])make\s+(?:-\S+\s+)*([a-z][a-z0-9_-]*)")
+#: Проверки выполняются в DinD только через этот скрипт (см. docs/CI.md)
+CI_DIND = "tools/ci_dind.sh"
+#: Образ DinD закреплён точной версией и дайджестом (env DIND_IMAGE в ci.yml)
+DIND_IMAGE_REF = re.compile(r"^docker:\d+\.\d+\.\d+-dind@sha256:[0-9a-f]{64}$")
+#: Базовый образ, закреплённый точной версией и дайджестом (FROM в Dockerfile*)
+PINNED_IMAGE_REF = re.compile(r"^[A-Za-z0-9./_-]+:\d[\w.+-]*@sha256:[0-9a-f]{64}$")
+#: Образ, из которого запускаются проверки в DinD (собирает задание ci-image)
+CHECKS_DOCKERFILE = "Dockerfile.checks"
 FORBIDDEN_FILE = re.compile(
     r"(^|/)\.env$|^deploy/docker/env/[^/]+\.env$|(^|/)backups/|\.dump$|\.pem$|\.key$"
     r"|(^|/)id_(rsa|ecdsa|ed25519)$"
@@ -213,15 +226,6 @@ def local_steps() -> dict[str, list[str]]:
     }
 
 
-def compose_db_image() -> str | None:
-    path = ROOT / "compose.yaml"
-    if not path.is_file():
-        return None
-    services = load_yaml(path).get("services") or {}
-    image = (services.get("db") or {}).get("image")
-    return str(image) if image else None
-
-
 def check_triggers(workflow: dict[str, Any]) -> None:
     # PyYAML читает ключ on как логическое True (YAML 1.1)
     triggers = workflow.get("on", workflow.get(True)) or {}
@@ -265,11 +269,13 @@ def check_jobs(workflow: dict[str, Any]) -> None:
                 )
             if uses and not uses.startswith("./") and not PINNED_ACTION.match(uses):
                 problem(label, f"action «{uses}» не закреплён полным хешем коммита")
-        for service, settings in (job.get("services") or {}).items():
-            image = (settings or {}).get("image")
-            expected = compose_db_image()
-            if expected and image != expected:
-                problem(f"{where}: {service}", f"образ {image}, а в compose.yaml — {expected}")
+        for service in job.get("services") or {}:
+            if name in CHECK_JOBS:
+                problem(
+                    f"{where}: {service}",
+                    "у задания проверки не может быть services: контейнеры поднимаются "
+                    "только внутри DinD (tools/ci_dind.sh)",
+                )
     publish = jobs.get(PUBLISH_JOB) or {}
     needs = publish.get("needs") or []
     needs = [needs] if isinstance(needs, str) else needs
@@ -297,6 +303,13 @@ def check_workflow() -> None:
     permissions = workflow.get("permissions")
     if not isinstance(permissions, dict) or permissions.get("contents") != "read":
         problem(WORKFLOW, "нужно permissions: contents: read (минимальные права токена)")
+    dind_image = str(_get(workflow, "env.DIND_IMAGE", ""))
+    if not DIND_IMAGE_REF.match(dind_image):
+        problem(
+            WORKFLOW,
+            "env DIND_IMAGE: образ DinD закрепляется точной версией и дайджестом "
+            "(docker:X.Y.Z-dind@sha256:…)",
+        )
 
     documents = [(WORKFLOW, workflow)]
     documents += [
@@ -309,8 +322,15 @@ def check_workflow() -> None:
             for pattern, text in FORBIDDEN_RUN.items():
                 if re.search(pattern, run, re.MULTILINE):
                     problem(f"{source}: {where}", text)
-            for target in MAKE_CALL.findall(run):
-                called.setdefault(target, f"{source}: {where}")
+            for line in run.splitlines():
+                for target in MAKE_CALL.findall(line):
+                    called.setdefault(target, f"{source}: {where}")
+                    if source == WORKFLOW and target not in HELPER_TARGETS and CI_DIND not in line:
+                        problem(
+                            f"{source}: {where}",
+                            f"make {target} выполняется вне DinD "
+                            f"(проверки — только через {CI_DIND} exec)",
+                        )
 
     steps = local_steps()
     if "verify" not in steps or "container-check" not in steps:
@@ -327,6 +347,32 @@ def check_workflow() -> None:
         f"Совпадение с локальными проверками: в CI выполняются все {len(expected)} шагов "
         "make verify и make container-check"
     )
+
+
+def check_checks_dockerfile() -> None:
+    """Dockerfile.checks — образ, в котором внутри DinD выполняются проверки."""
+    path = ROOT / CHECKS_DOCKERFILE
+    if not path.is_file():
+        problem(
+            CHECKS_DOCKERFILE,
+            "файл не найден: проверки CI выполняются в образе из него (tools/ci_dind.sh)",
+        )
+        return
+    stages: set[str] = set()
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        parts = line.split()
+        if not parts or parts[0].upper() != "FROM" or len(parts) < 2:
+            continue
+        image = parts[1]
+        if image in stages:
+            continue
+        if not PINNED_IMAGE_REF.match(image):
+            problem(
+                f"{CHECKS_DOCKERFILE}:{number}",
+                f"образ «{image}» не закреплён: нужно имя:точная-версия@sha256:дайджест",
+            )
+        if len(parts) == 4 and parts[2].upper() == "AS":
+            stages.add(parts[3])
 
 
 # ---------------------------------------------------------------------------
@@ -607,6 +653,7 @@ def main(argv: list[str] | None = None) -> int:
         found.clear()
 
     check_workflow()
+    check_checks_dockerfile()
     check_codeowners()
     check_gitleaks_config()
     critical: list[str] = []

@@ -28,6 +28,7 @@
 
 # образ и контейнерное окружение
 /Dockerfile          @vnchk1 @ghaedaaa
+/Dockerfile.checks   @vnchk1 @ghaedaaa
 /.dockerignore       @vnchk1 @ghaedaaa
 /compose.yaml        @vnchk1 @ghaedaaa
 /requirements.lock   @vnchk1 @ghaedaaa

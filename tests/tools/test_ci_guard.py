@@ -31,6 +31,7 @@ FILES = (
     "tools/policy.py",
     ".gitleaks.toml",
     ".trivyignore",
+    "Dockerfile.checks",
 )
 WORKFLOW = ".github/workflows/ci.yml"
 
@@ -157,8 +158,8 @@ def test_weakened_rule(repo: Path, path: str, old: str, new: str, message: str) 
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        ("run: make mutation", "run: echo mutation", "make mutation не выполняется в CI"),
-        ("run: make test", "run: make test || true", "ошибка команды подавлена"),
+        ("exec make mutation", "echo mutation", "make mutation не выполняется в CI"),
+        ("exec make test", "exec make test || true", "ошибка команды подавлена"),
         (
             "      - name: make secrets\n",
             "      - name: make secrets\n        continue-on-error: true\n",
@@ -185,8 +186,7 @@ def test_weakened_rule(repo: Path, path: str, old: str, new: str, message: str) 
             "actions/checkout@v7",
             "не закреплён полным хешем",
         ),
-        ("run: make policy", "run: make policy && make test-unit", "make test-unit"),
-        ("image: postgres:16.15-trixie", "image: postgres:17.6-trixie", "в compose.yaml"),
+        ("exec make policy", "exec make policy && make test-unit", "make test-unit"),
         ("  contents: read\n", "  contents: write\n", "permissions"),
     ],
 )
@@ -195,6 +195,62 @@ def test_disabled_check_in_pipeline(repo: Path, old: str, new: str, message: str
     code, found = run_guard(repo)
     assert code == 1
     assert message in found
+
+
+# ---------------------------------------------------------------------------
+# Обойти DinD: проверки выполняются только в контейнерах (tools/ci_dind.sh)
+# ---------------------------------------------------------------------------
+def test_check_outside_dind(repo: Path) -> None:
+    edit(repo, WORKFLOW, "run: bash tools/ci_dind.sh exec make policy", "run: make policy")
+    code, found = run_guard(repo)
+    assert code == 1
+    assert "make policy выполняется вне DinD" in found
+
+
+def test_services_in_check_job(repo: Path) -> None:
+    # контейнер-сервис задания работает в обход DinD — запрещён у заданий проверки
+    edit(
+        repo,
+        WORKFLOW,
+        "  tests:\n",
+        "  tests:\n    services:\n      postgres:\n        image: postgres:16.15-trixie\n",
+    )
+    code, found = run_guard(repo)
+    assert code == 1
+    assert "не может быть services" in found
+
+
+def test_unpinned_dind_image(repo: Path) -> None:
+    edit(
+        repo,
+        WORKFLOW,
+        r"docker:29\.1\.3-dind@sha256:[0-9a-f]{64}",
+        "docker:29-dind",
+        regex=True,
+    )
+    code, found = run_guard(repo)
+    assert code == 1
+    assert "DIND_IMAGE" in found
+
+
+def test_unpinned_checks_image(repo: Path) -> None:
+    edit(
+        repo,
+        "Dockerfile.checks",
+        r"^(FROM python:3\.12\.16-slim-trixie)@sha256:[0-9a-f]{64}$",
+        r"\1",
+        regex=True,
+    )
+    code, found = run_guard(repo)
+    assert code == 1
+    assert "не закреплён" in found
+
+
+def test_removed_checks_dockerfile(repo: Path) -> None:
+    (repo / "Dockerfile.checks").unlink()
+    code, found = run_guard(repo)
+    assert code == 1
+    assert "Dockerfile.checks: файл не найден" in found
 
 
 def test_removed_job(repo: Path) -> None:
@@ -276,5 +332,5 @@ def test_approval_does_not_cover_pipeline_rules(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("GUARD_APPROVED", "1")
-    edit(repo, WORKFLOW, "run: make test", "run: make test || true")
+    edit(repo, WORKFLOW, "exec make test", "exec make test || true")
     assert run_guard(repo)[0] == 1
