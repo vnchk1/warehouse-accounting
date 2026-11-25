@@ -68,7 +68,7 @@ jobs:
           docker build -f Dockerfile.checks -t "warehouse-ci:$tag" .
           mkdir -p ci-image
           docker save "warehouse-ci:$tag" | gzip -1 > ci-image/ci-image.tar.gz
-          (cd ci-image && sha256sum ci-image.tar.gz > ci-image/ci-image.tar.gz.sha256)
+          (cd ci-image && sha256sum ci-image.tar.gz > ci-image.tar.gz.sha256)
           echo "Образ проверок warehouse-ci:$tag, файл $(cut -c1-19 ci-image/ci-image.tar.gz.sha256)…, $(du -h ci-image/ci-image.tar.gz | cut -f1)"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
