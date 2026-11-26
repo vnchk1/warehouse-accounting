@@ -19,7 +19,9 @@
 # Окружение: DIND_IMAGE — закреплённый образ docker:*-dind (задаётся в ci.yml,
 # обязательна). CI_IMAGE_TAR — файл образа проверок из артефакта задания ci-image;
 # без него образ собирается из Dockerfile.checks (локальный запуск, нужен Docker).
-# С --db обязательна CI_DB_PASSWORD.
+# С --db обязательна CI_DB_PASSWORD. CI_GH_TOKEN — токен GitHub API: событие push
+# не содержит данных запроса на слияние, поэтому метки открытого запроса этой
+# ветки (их проверяет make guard) дочитываются через API.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -133,6 +135,28 @@ up() {
     docker start "$WORK" >/dev/null
     tar -cf - . | docker exec -i "$WORK" tar -xf - -C /src
     docker exec "$WORK" git config --global --add safe.directory /src
+    # Событие push не содержит данных запроса на слияние, а make guard проверяет
+    # метку acceptance-change по ним: находим открытый запрос этой ветки через
+    # API и заменяем файл события синтетическим — только с метками запроса
+    if [[ ${GITHUB_EVENT_NAME:-} == push && -n ${CI_GH_TOKEN:-} ]]; then
+        local pr_event
+        pr_event=$(mktemp)
+        if curl -fsSL -H "Authorization: Bearer $CI_GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls?head=${GITHUB_REPOSITORY%/*}:${GITHUB_REF_NAME}&state=open" |
+            python3 -c '
+import json, sys
+prs = json.load(sys.stdin)
+labels = prs[0]["labels"] if prs else []
+json.dump({"pull_request": {"labels": [{"name": la["name"]} for la in labels]}}, sys.stdout)
+' >"$pr_event"; then
+            GITHUB_EVENT_PATH=$pr_event
+            echo "Событие push: метки открытого запроса на слияние получены через API"
+        else
+            rm -f "$pr_event"
+            echo "Событие push: запрос не найден или API недоступен — событие без меток"
+        fi
+    fi
     # Событие GitHub (метки запроса на слияние) читает make guard
     if [[ -n ${GITHUB_EVENT_PATH:-} && -f $GITHUB_EVENT_PATH ]]; then
         docker cp "$GITHUB_EVENT_PATH" "$WORK:/tmp/github-event.json" >/dev/null
