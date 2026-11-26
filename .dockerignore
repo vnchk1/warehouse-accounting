@@ -8,6 +8,9 @@
 !alembic.ini
 !pyproject.toml
 !requirements.lock
+# контекст образа проверок (Dockerfile.checks): установка инструментов по tools.lock
+!tools/install_tools.sh
+!tools/tools.lock
 
 # кэш Python, если он оказался внутри разрешённых каталогов
 **/__pycache__

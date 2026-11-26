@@ -17,6 +17,9 @@ reports/
 backups/
 *.dump
 
+# кэш базы уязвимостей trivy в CI (tools/ci_dind.sh cache-load/cache-save)
+.trivy-cache/
+
 # среды разработки и ОС
 .idea/
 .vscode/
