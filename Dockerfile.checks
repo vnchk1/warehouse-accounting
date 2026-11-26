@@ -40,7 +40,10 @@ COPY --from=docker /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/doc
 WORKDIR /src
 COPY pyproject.toml ./
 COPY app ./app
+# pip из venv обновляем до актуального (как make install): посеянный python -m venv
+# pip может содержать известные уязвимости, которые найдёт make deps-audit
 RUN python -m venv /opt/venv \
+ && /opt/venv/bin/pip install --quiet --upgrade pip \
  && /opt/venv/bin/pip install --quiet -e ".[dev]" \
  && /opt/venv/bin/pip check
 
