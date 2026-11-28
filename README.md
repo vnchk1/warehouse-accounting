@@ -13,6 +13,7 @@
 - Развертывание на серверах — [deploy/README.md](deploy/README.md)
 - Контейнеры, Nginx и несколько экземпляров — [docs/CONTAINERS.md](docs/CONTAINERS.md)
 - Непрерывная интеграция (CI), публикация образа, защита приёмки — [docs/CI.md](docs/CI.md)
+- Непрерывное развертывание (CD), проверка релиза — [docs/CD.md](docs/CD.md)
 
 ## Быстрый старт (Linux, WSL2)
 
@@ -223,3 +224,4 @@ Dockerfile, .dockerignore, compose.yaml, requirements.lock   образ и ок�
 | `/api/v1/...` | HTTP API (в том числе `/api/v1/units`) |
 | `/docs` | Описание API |
 | `/healthz` | Проверка работоспособности и идентификатор экземпляра (`instance`) |
+| `/version` | Версия и коммит работающей сборки (проверка релиза, ЛР6) |
