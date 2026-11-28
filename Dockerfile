@@ -50,6 +50,10 @@ RUN python -m compileall -q app migrations
 # остаются в кэше сборки. Коммит (ЛР5, п. 9): в теге образа — начало хеша, в метке — полностью.
 ARG VERSION=0.1.0
 ARG REVISION=unknown
+# Версия сборки — и переменными окружения (ЛР6, п. 8): адрес /version сообщает,
+# какая сборка образа сейчас работает, проверка релиза сравнивает её с тегом
+ENV APP_VERSION="${VERSION}" \
+    APP_REVISION="${REVISION}"
 LABEL org.opencontainers.image.title="warehouse" \
       org.opencontainers.image.description="Складской учёт: материалы, поставщики, поступления" \
       org.opencontainers.image.version="${VERSION}" \

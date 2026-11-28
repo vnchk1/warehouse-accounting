@@ -1,0 +1,121 @@
+# CD «Складской учёт» (ЛР6): развертывание на предэксплуатационном окружении
+# wa-stage01 после успешной публикации образа и проверка работающего релиза.
+# Подробности — docs/CD.md.
+#
+#   CI (master) успешно ──► publish ──► реестр ──► [этот workflow]
+#     развертывание (SSH, учётная запись deploy) ──► проверка релиза
+#
+# Развертывание ограничено: автоматическое — только ветка master после успешного
+# CI; ручное — только с явно указанным тегом образа (п. 6). Одновременные
+# развертывания выстраиваются в очередь, а не отменяют друг друга (п. 11).
+# Падение проверки после развертывания = релиз не принят (п. 9).
+
+name: CD
+
+on:
+  # автоматическое развертывание: CI в master завершился успехом (п. 5)
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+  # развертывание конкретного тега и ручной возврат предыдущей версии (п. 10)
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Тег образа warehouse-app, например 0.1.0-0123456789ab"
+        required: true
+        type: string
+
+# Токен заданий может только читать репозиторий
+permissions:
+  contents: read
+
+# Конфликтующие развертывания не выполняются одновременно (п. 11):
+# отменять развертывание на полпути нельзя — оно может оставить окружение
+# в промежуточном состоянии, поэтому новое ждёт завершения текущего
+concurrency:
+  group: cd-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Развертывание и проверка релиза
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, warehouse-registry]
+    # окружение с секретами доступа к wa-stage01; доступно только ветке master
+    environment: staging
+    timeout-minutes: 15
+    env:
+      STAGING_HOST: 192.168.253.132
+      STAGING_USER: deploy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # при автоматическом запуске тег вычисляется из коммита, который проверял CI
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+          persist-credentials: false
+      - name: Тег развёртываемого образа
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          else
+            version=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -1)
+            tag="$version-$(echo '${{ github.event.workflow_run.head_sha }}' | cut -c1-12)"
+          fi
+          if [[ ! $tag =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{12}$ ]]; then
+            echo "::error::неверный формат тега: $tag"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Развёртываем warehouse-app:$tag"
+      - name: Образ есть в реестре
+        env:
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          code=$(curl -fsS -o /dev/null -w '%{http_code}' \
+            -u "$REGISTRY_USER:$REGISTRY_PASSWORD" \
+            -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+            "http://127.0.0.1:5000/v2/warehouse-app/manifests/$TAG") || {
+            echo "::error::реестр 127.0.0.1:5000 недоступен"
+            exit 1
+          }
+          if [[ $code != 200 ]]; then
+            echo "::error::образ warehouse-app:$TAG не найден в реестре (код $code)"
+            exit 1
+          fi
+          echo "Образ warehouse-app:$TAG найден в реестре"
+      - name: Развертывание на wa-stage01
+        env:
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          install -m 700 -d "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$STAGING_SSH_KEY" > "$RUNNER_TEMP/ssh/id_ed25519"
+          chmod 600 "$RUNNER_TEMP/ssh/id_ed25519"
+          export SSHOPTS="-i $RUNNER_TEMP/ssh/id_ed25519 -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile=deploy/stage/known_hosts \
+            -o ConnectTimeout=10"
+          ssh $SSHOPTS "$STAGING_USER@$STAGING_HOST" \
+            "bash /srv/warehouse-stage/deploy.sh '$TAG'"
+      - name: Проверка релиза
+        env:
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          export SSHOPTS="-i $RUNNER_TEMP/ssh/id_ed25519 -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile=deploy/stage/known_hosts \
+            -o ConnectTimeout=10"
+          ssh $SSHOPTS "$STAGING_USER@$STAGING_HOST" \
+            "bash /srv/warehouse-stage/verify.sh '$TAG'"
+          {
+            echo "## Релиз принят"
+            echo ""
+            echo "- образ: \`warehouse-app:$TAG\`"
+            echo "- окружение: wa-stage01 (http://$STAGING_HOST)"
+            echo "- проверки: контейнеры, /healthz, /version, основной сценарий"
+          } >> "$GITHUB_STEP_SUMMARY"

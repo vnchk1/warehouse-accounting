@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     password_min_length: int = 8
     # идентификатор экземпляра в ответах; пусто — имя узла (в контейнере это его ID)
     instance_id: str = ""
+    # версия и коммит сборки образа (ЛР6, п. 8): их задаёт Dockerfile через ENV;
+    # вне контейнера (запуск из исходников) — значения по умолчанию
+    app_version: str = "0.1.0"
+    app_revision: str = "unknown"
 
 
 @functools.lru_cache(maxsize=1)

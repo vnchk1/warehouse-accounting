@@ -31,7 +31,42 @@ def test_healthz(client: TestClient) -> None:
     }
 
 
-@pytest.mark.parametrize("path", ["/healthz", "/login", f"{V1}/units", "/нет-такой-страницы"])
+def test_version(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Служебный адрес версии (ЛР6, п. 8): без переменных окружения — версия
+    из pyproject и ревизия «unknown» (APP_REVISION экспортируется Makefile, гасим)."""
+    monkeypatch.delenv("APP_VERSION", raising=False)
+    monkeypatch.delenv("APP_REVISION", raising=False)
+    get_settings.cache_clear()
+    try:
+        response = client.get("/version")
+    finally:
+        get_settings.cache_clear()
+    assert response.status_code == 200
+    assert response.json() == {
+        "version": "0.1.0",
+        "revision": "unknown",
+        "instance": socket.gethostname(),
+    }
+
+
+def test_version_from_environment(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """В контейнере версия и коммит приходят от образа (ENV APP_VERSION/APP_REVISION)."""
+    monkeypatch.setenv("APP_VERSION", "0.1.0-0123456789ab")
+    monkeypatch.setenv("APP_REVISION", "0123456789abcdef" * 2 + "01234567")
+    get_settings.cache_clear()
+    try:
+        response = client.get("/version")
+    finally:
+        monkeypatch.delenv("APP_VERSION")
+        monkeypatch.delenv("APP_REVISION")
+        get_settings.cache_clear()
+    assert response.json()["version"] == "0.1.0-0123456789ab"
+    assert response.json()["revision"] == "0123456789abcdef" * 2 + "01234567"
+
+
+@pytest.mark.parametrize(
+    "path", ["/healthz", "/version", "/login", f"{V1}/units", "/нет-такой-страницы"]
+)
 def test_every_response_names_instance(client: TestClient, path: str) -> None:
     """Доп. задание: за Nginx видно, какой экземпляр приложения ответил."""
     assert client.get(path).headers["X-Instance-Id"] == socket.gethostname()

@@ -75,9 +75,24 @@ def healthz() -> Response:
     )
 
 
+@app.get("/version", tags=["Служебные"], summary="Версия работающего образа")
+def version() -> dict[str, str]:
+    """Версия и коммит сборки, которая сейчас работает (ЛР6, п. 8).
+
+    Значения задаются образу при сборке (Dockerfile, ENV APP_VERSION/APP_REVISION);
+    проверка релиза после развертывания сравнивает version с тегом образа.
+    """
+    settings = get_settings()
+    return {
+        "version": settings.app_version,
+        "revision": settings.app_revision,
+        "instance": instance_id(settings),
+    }
+
+
 def wants_json(request: Request) -> bool:
     """Программному интерфейсу отвечаем JSON, страницам — HTML."""
-    return request.url.path.startswith(("/api/", "/healthz"))
+    return request.url.path.startswith(("/api/", "/healthz", "/version"))
 
 
 @app.exception_handler(AppError)
